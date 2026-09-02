@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Camera, ChevronRight, Download, LogOut, Users, LayoutGrid, FileText, MapPin, X, CreditCard, Banknote, Check } from "lucide-react";
+import { Camera, ChevronRight, Download, LogOut, Users, LayoutGrid, FileText, MapPin, X, CreditCard, Banknote, Check, Menu, Search } from "lucide-react";
 import { supabase, usernameToEmail } from "../lib/supabaseClient";
 
 const LOCATIONS = ["Radisson", "Harbour", "Five Hotels"];
@@ -24,13 +24,27 @@ function fmtTime(iso) {
   return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 }
 
+function useIsMobile(breakpoint = 780) {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    function check() {
+      setIsMobile(window.innerWidth <= breakpoint);
+    }
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, [breakpoint]);
+  return isMobile;
+}
+
 export default function Home() {
-  const [session, setSession] = useState(undefined); // undefined = loading, null = signed out
+  const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
   const [sales, setSales] = useState([]);
   const [view, setView] = useState("dashboard");
   const [activeLocation, setActiveLocation] = useState(LOCATIONS[0]);
   const [showLogModal, setShowLogModal] = useState(false);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
@@ -72,19 +86,20 @@ export default function Home() {
   }, [profile, loadSales]);
 
   async function addSale(entry) {
-    const { error } = await supabase.from("sales").insert(entry);
+    const { data, error } = await supabase.from("sales").insert(entry).select().single();
     if (error) {
       alert("Could not save sale: " + error.message);
-      return;
+      return null;
     }
     loadSales();
+    return data;
   }
 
   if (session === undefined) return <FullscreenMsg text="Loading..." />;
   if (!session || !profile) return <Login onSignedIn={() => {}} />;
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", background: paper, fontFamily: "Inter, sans-serif", color: ink }}>
+    <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: "100vh", background: paper, fontFamily: "Inter, sans-serif", color: ink }}>
       <Sidebar
         profile={profile}
         view={view}
@@ -92,23 +107,25 @@ export default function Home() {
         activeLocation={activeLocation}
         setActiveLocation={setActiveLocation}
         onSignOut={() => supabase.auth.signOut()}
+        isMobile={isMobile}
       />
-      <main style={{ flex: 1, padding: "40px 44px", minWidth: 0 }}>
+      <main style={{ flex: 1, padding: isMobile ? "20px 16px 90px" : "40px 44px", minWidth: 0 }}>
         {view === "dashboard" && profile.role === "manager" && (
-          <Dashboard sales={sales} onOpenLocation={(loc) => { setActiveLocation(loc); setView("location"); }} />
+          <Dashboard sales={sales} onOpenLocation={(loc) => { setActiveLocation(loc); setView("location"); }} isMobile={isMobile} />
         )}
         {view === "location" && (
-          <LocationView location={activeLocation} sales={sales} profile={profile} onLogSale={() => setShowLogModal(true)} />
+          <LocationView location={activeLocation} sales={sales} profile={profile} onLogSale={() => setShowLogModal(true)} isMobile={isMobile} />
         )}
-        {view === "reports" && profile.role === "manager" && <Reports sales={sales} />}
-        {view === "staff" && profile.role === "manager" && <StaffView sales={sales} />}
+        {view === "reports" && profile.role === "manager" && <Reports sales={sales} isMobile={isMobile} />}
+        {view === "staff" && profile.role === "manager" && <StaffView sales={sales} isMobile={isMobile} />}
       </main>
       {showLogModal && (
         <LogSaleModal
           location={activeLocation}
           profile={profile}
+          isMobile={isMobile}
           onClose={() => setShowLogModal(false)}
-          onSubmit={async (entry) => { await addSale(entry); setShowLogModal(false); }}
+          onSubmit={async (entry) => addSale(entry)}
         />
       )}
     </div>
@@ -124,12 +141,17 @@ function FullscreenMsg({ text }) {
 }
 
 function Login() {
-  const [mode, setMode] = useState("signin"); // signin | signup
+  const [mode, setMode] = useState("signin");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [location, setLocation] = useState(LOCATIONS[0]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  function switchMode(m) {
+    setMode(m);
+    setError("");
+  }
 
   async function handleSignIn() {
     setBusy(true);
@@ -154,8 +176,6 @@ function Login() {
       setBusy(false);
       return;
     }
-    // profile row is created automatically by a database trigger with role 'staff'.
-    // set their chosen location.
     if (data.user) {
       await supabase.from("profiles").update({ location }).eq("id", data.user.id);
     }
@@ -163,8 +183,8 @@ function Login() {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: ink, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, sans-serif" }}>
-      <div style={{ width: 380, background: paper, borderRadius: 4, padding: "40px 36px", border: `1px solid ${cardBorder}` }}>
+    <div style={{ minHeight: "100vh", background: ink, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, sans-serif", padding: 16 }}>
+      <div style={{ width: "100%", maxWidth: 380, background: paper, borderRadius: 4, padding: "40px 32px", border: `1px solid ${cardBorder}`, boxSizing: "border-box" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
           <span style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, color: ink }}>Shutter</span>
           <span style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 300, color: gold, fontStyle: "italic" }}>Ledger</span>
@@ -172,8 +192,8 @@ function Login() {
         <p style={{ color: inkSoft, fontSize: 13.5, marginBottom: 24, lineHeight: 1.5 }}>Photo sales, tracked by location.</p>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-          <button onClick={() => setMode("signin")} style={tabStyle(mode === "signin")}>Sign in</button>
-          <button onClick={() => setMode("signup")} style={tabStyle(mode === "signup")}>New staff account</button>
+          <button onClick={() => switchMode("signin")} style={tabStyle(mode === "signin")}>Sign in</button>
+          <button onClick={() => switchMode("signup")} style={tabStyle(mode === "signup")}>New staff account</button>
         </div>
 
         <label style={labelStyle}>Username</label>
@@ -200,7 +220,7 @@ function Login() {
           onClick={mode === "signin" ? handleSignIn : handleSignUp}
           style={{
             width: "100%",
-            padding: "11px 0",
+            padding: "12px 0",
             borderRadius: 3,
             border: "none",
             background: username.trim() && password && !busy ? gold : "#CFC6AE",
@@ -224,11 +244,11 @@ function Login() {
 }
 
 const labelStyle = { fontSize: 12, color: inkSoft, display: "block", marginBottom: 5 };
-const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 3, border: `1px solid ${cardBorder}`, marginBottom: 16, fontSize: 14, background: "#fff", boxSizing: "border-box" };
+const inputStyle = { width: "100%", padding: "11px 12px", borderRadius: 3, border: `1px solid ${cardBorder}`, marginBottom: 16, fontSize: 15, background: "#fff", boxSizing: "border-box" };
 function tabStyle(active) {
   return {
     flex: 1,
-    padding: "9px 0",
+    padding: "10px 0",
     fontSize: 12.5,
     borderRadius: 3,
     border: `1px solid ${active ? ink : cardBorder}`,
@@ -238,20 +258,82 @@ function tabStyle(active) {
   };
 }
 
-function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, onSignOut }) {
-  const navItemStyle = (active) => ({
+function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, onSignOut, isMobile }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const navItemStyle = (active, mobileStyle) => ({
     display: "flex",
     alignItems: "center",
     gap: 10,
-    padding: "9px 14px",
+    padding: mobileStyle ? "13px 16px" : "9px 14px",
     borderRadius: 3,
-    fontSize: 13.5,
+    fontSize: mobileStyle ? 15 : 13.5,
     color: active ? paper : "#9FAEA8",
     background: active ? "rgba(200,155,60,0.16)" : "transparent",
     borderLeft: active ? `2px solid ${gold}` : "2px solid transparent",
     cursor: "pointer",
     marginBottom: 2,
   });
+
+  const locations = profile.role === "manager" ? LOCATIONS : [profile.location];
+
+  function go(setter, val, closeMenu) {
+    setter(val);
+    if (closeMenu) setMenuOpen(false);
+  }
+
+  if (isMobile) {
+    return (
+      <>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: ink, padding: "14px 16px" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+            <span style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600, color: paper }}>Shutter</span>
+            <span style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 300, fontStyle: "italic", color: gold }}>Ledger</span>
+          </div>
+          <div onClick={() => setMenuOpen(true)} style={{ color: paper, cursor: "pointer", padding: 4 }}>
+            <Menu size={22} />
+          </div>
+        </div>
+        {menuOpen && (
+          <div style={{ position: "fixed", inset: 0, background: ink, zIndex: 60, padding: "18px 16px", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+              <div style={{ color: paper, fontSize: 14, fontWeight: 600 }}>{profile.username}</div>
+              <X size={22} color={paper} onClick={() => setMenuOpen(false)} />
+            </div>
+
+            {profile.role === "manager" && (
+              <div onClick={() => go(setView, "dashboard", true)} style={navItemStyle(view === "dashboard", true)}>
+                <LayoutGrid size={16} /> Dashboard
+              </div>
+            )}
+
+            <div style={{ marginTop: 12, marginBottom: 4, padding: "0 16px", fontSize: 11, color: "#6E7D77" }}>Locations</div>
+            {locations.filter(Boolean).map((loc) => (
+              <div key={loc} onClick={() => { go(setActiveLocation, loc); go(setView, "location", true); }} style={navItemStyle(view === "location" && activeLocation === loc, true)}>
+                <MapPin size={16} /> {loc}
+              </div>
+            ))}
+
+            {profile.role === "manager" && (
+              <>
+                <div style={{ marginTop: 12, marginBottom: 4, padding: "0 16px", fontSize: 11, color: "#6E7D77" }}>Manage</div>
+                <div onClick={() => go(setView, "reports", true)} style={navItemStyle(view === "reports", true)}>
+                  <FileText size={16} /> Reports
+                </div>
+                <div onClick={() => go(setView, "staff", true)} style={navItemStyle(view === "staff", true)}>
+                  <Users size={16} /> Staff
+                </div>
+              </>
+            )}
+
+            <div onClick={onSignOut} style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 16px", color: "#9FAEA8", fontSize: 14, cursor: "pointer", marginTop: 20, borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+              <LogOut size={15} /> Sign out
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
 
   return (
     <aside style={{ width: 220, background: ink, padding: "26px 16px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
@@ -267,7 +349,7 @@ function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, on
       )}
 
       <div style={{ marginTop: 10, marginBottom: 4, padding: "0 14px", fontSize: 11, color: "#6E7D77" }}>Locations</div>
-      {(profile.role === "manager" ? LOCATIONS : [profile.location]).filter(Boolean).map((loc) => (
+      {locations.filter(Boolean).map((loc) => (
         <div key={loc} onClick={() => { setActiveLocation(loc); setView("location"); }} style={navItemStyle(view === "location" && activeLocation === loc)}>
           <MapPin size={15} /> {loc}
         </div>
@@ -300,14 +382,14 @@ function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, on
 
 function StatCard({ label, value, tint }) {
   return (
-    <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "16px 18px", flex: 1 }}>
+    <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "16px 18px", flex: "1 1 150px", minWidth: 140 }}>
       <div style={{ fontSize: 12, color: inkSoft, marginBottom: 8 }}>{label}</div>
       <div style={{ fontFamily: "Fraunces, serif", fontSize: 24, fontWeight: 600, color: tint || ink }}>{value}</div>
     </div>
   );
 }
 
-function Dashboard({ sales, onOpenLocation }) {
+function Dashboard({ sales, onOpenLocation, isMobile }) {
   const totals = useMemo(() => {
     const byLoc = {};
     LOCATIONS.forEach((l) => (byLoc[l] = { cash: 0, card: 0, count: 0 }));
@@ -326,19 +408,19 @@ function Dashboard({ sales, onOpenLocation }) {
 
   return (
     <div>
-      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 28, fontWeight: 600, margin: 0 }}>Dashboard</h1>
-      <p style={{ color: inkSoft, fontSize: 13.5, marginTop: 4, marginBottom: 26 }}>Photo sales across all locations, live.</p>
+      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: isMobile ? 22 : 28, fontWeight: 600, margin: 0 }}>Dashboard</h1>
+      <p style={{ color: inkSoft, fontSize: 13.5, marginTop: 4, marginBottom: 22 }}>Photo sales across all locations, live.</p>
 
-      <div style={{ display: "flex", gap: 14, marginBottom: 28 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 24 }}>
         <StatCard label="Total sales" value={fmtAED(grandTotal)} />
         <StatCard label="Cash collected" value={fmtAED(cashTotal)} tint={teal} />
         <StatCard label="Card collected" value={fmtAED(cardTotal)} tint={coral} />
         <StatCard label="Entries logged" value={sales.length} />
       </div>
 
-      <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "20px 22px", marginBottom: 22 }}>
+      <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: isMobile ? "18px 14px" : "20px 22px", marginBottom: 20, overflowX: "auto" }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 18 }}>Radisson vs Harbour vs Five Hotels</div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 40, height: 160, paddingLeft: 4 }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: isMobile ? 24 : 40, height: 160, paddingLeft: 4, minWidth: isMobile ? 300 : "auto" }}>
           {LOCATIONS.map((loc) => {
             const t = totals[loc];
             const h = ((t.cash + t.card) / maxVal) * 140;
@@ -360,9 +442,9 @@ function Dashboard({ sales, onOpenLocation }) {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 14 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         {LOCATIONS.map((loc) => (
-          <div key={loc} onClick={() => onOpenLocation(loc)} style={{ flex: 1, background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "16px 18px", cursor: "pointer" }}>
+          <div key={loc} onClick={() => onOpenLocation(loc)} style={{ flex: "1 1 200px", background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "16px 18px", cursor: "pointer" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ fontSize: 14, fontWeight: 600 }}>{loc}</div>
               <ChevronRight size={15} color={inkSoft} />
@@ -376,7 +458,7 @@ function Dashboard({ sales, onOpenLocation }) {
   );
 }
 
-function LocationView({ location, sales, profile, onLogSale }) {
+function LocationView({ location, sales, profile, onLogSale, isMobile }) {
   const entries = sales.filter((s) => s.location === location);
   const total = entries.reduce((sum, s) => sum + Number(s.amount), 0);
   const cash = entries.filter((s) => s.method === "cash").reduce((sum, s) => sum + Number(s.amount), 0);
@@ -403,17 +485,20 @@ function LocationView({ location, sales, profile, onLogSale }) {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: isMobile ? "stretch" : "flex-start", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 0 }}>
         <div>
-          <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 28, fontWeight: 600, margin: 0 }}>{location}</h1>
+          <h1 style={{ fontFamily: "Fraunces, serif", fontSize: isMobile ? 22 : 28, fontWeight: 600, margin: 0 }}>{location}</h1>
           <p style={{ color: inkSoft, fontSize: 13.5, marginTop: 4 }}>Sales log for this location.</p>
         </div>
-        <button onClick={onLogSale} style={{ background: gold, border: "none", borderRadius: 3, padding: "10px 18px", fontWeight: 600, fontSize: 13.5, color: ink, cursor: "pointer" }}>
+        <button
+          onClick={onLogSale}
+          style={{ background: gold, border: "none", borderRadius: 3, padding: "12px 18px", fontWeight: 600, fontSize: 14, color: ink, cursor: "pointer", width: isMobile ? "100%" : "auto" }}
+        >
           + Log sale
         </button>
       </div>
 
-      <div style={{ display: "flex", gap: 14, margin: "22px 0 26px" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, margin: "20px 0 22px" }}>
         <StatCard label="Total collected" value={fmtAED(total)} />
         <StatCard label="Cash" value={fmtAED(cash)} tint={teal} />
         <StatCard label="Card" value={fmtAED(card)} tint={coral} />
@@ -423,36 +508,56 @@ function LocationView({ location, sales, profile, onLogSale }) {
       <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, overflow: "hidden" }}>
         <div style={{ padding: "14px 20px", fontSize: 13.5, fontWeight: 600, borderBottom: `1px solid ${cardBorder}` }}>Sale history</div>
         {entries.length === 0 && <div style={{ padding: "30px 20px", color: inkSoft, fontSize: 13.5 }}>No sales logged yet for {location}.</div>}
-        {entries.map((e) => (
-          <div key={e.id} style={{ display: "flex", alignItems: "center", padding: "14px 20px", borderBottom: `1px solid ${cardBorder}`, gap: 14 }}>
-            <div style={{ width: 8, height: 8, borderRadius: "50%", background: e.method === "cash" ? teal : coral, flexShrink: 0 }} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 500 }}>{e.staff_username}</div>
-              <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Credit card"}</div>
+        {entries.map((e) =>
+          isMobile ? (
+            <div key={e.id} style={{ padding: "14px 16px", borderBottom: `1px solid ${cardBorder}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: e.method === "cash" ? teal : coral, flexShrink: 0 }} />
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>{e.staff_username}</div>
+                </div>
+                <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600 }}>{fmtAED(e.amount)}</div>
+              </div>
+              <div style={{ fontSize: 11.5, color: inkSoft, marginTop: 4, fontFamily: "monospace" }}>{e.ref_number || "—"}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+                <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Card"}</div>
+                {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
+                  <img src={thumbs[e.card_photo_path]} onClick={() => setPreviewUrl(thumbs[e.card_photo_path])} style={{ width: 34, height: 22, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
+                )}
+              </div>
             </div>
-            {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
-              <img src={thumbs[e.card_photo_path]} onClick={() => setPreviewUrl(thumbs[e.card_photo_path])} style={{ width: 40, height: 26, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
-            )}
-            <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, width: 110, textAlign: "right" }}>{fmtAED(e.amount)}</div>
-          </div>
-        ))}
+          ) : (
+            <div key={e.id} style={{ display: "flex", alignItems: "center", padding: "14px 20px", borderBottom: `1px solid ${cardBorder}`, gap: 14 }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: e.method === "cash" ? teal : coral, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 500 }}>{e.staff_username} <span style={{ color: inkSoft, fontWeight: 400, fontFamily: "monospace", fontSize: 12 }}>· {e.ref_number || "—"}</span></div>
+                <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Credit card"}</div>
+              </div>
+              {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
+                <img src={thumbs[e.card_photo_path]} onClick={() => setPreviewUrl(thumbs[e.card_photo_path])} style={{ width: 40, height: 26, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
+              )}
+              <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, width: 110, textAlign: "right" }}>{fmtAED(e.amount)}</div>
+            </div>
+          )
+        )}
       </div>
 
       {previewUrl && (
         <div onClick={() => setPreviewUrl(null)} style={{ position: "fixed", inset: 0, background: "rgba(20,36,32,0.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, cursor: "zoom-out" }}>
-          <img src={previewUrl} style={{ maxWidth: "80%", maxHeight: "80%", borderRadius: 4 }} />
+          <img src={previewUrl} style={{ maxWidth: "90%", maxHeight: "90%", borderRadius: 4 }} />
         </div>
       )}
     </div>
   );
 }
 
-function LogSaleModal({ location, profile, onClose, onSubmit }) {
+function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");
   const [cardFile, setCardFile] = useState(null);
   const [cardPreview, setCardPreview] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [savedRef, setSavedRef] = useState(null);
   const fileRef = useRef(null);
 
   function handleFile(e) {
@@ -477,7 +582,7 @@ function LogSaleModal({ location, profile, onClose, onSubmit }) {
       }
       card_photo_path = path;
     }
-    await onSubmit({
+    const saved = await onSubmit({
       location,
       staff_username: profile.username,
       amount: Number(amount),
@@ -485,65 +590,86 @@ function LogSaleModal({ location, profile, onClose, onSubmit }) {
       card_photo_path,
     });
     setSaving(false);
+    if (saved) {
+      setSavedRef(saved.ref_number);
+      setTimeout(onClose, 1600);
+    }
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(20,36,32,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 40 }}>
-      <div style={{ width: 400, background: paper, borderRadius: 4, padding: "26px 26px 22px", border: `1px solid ${cardBorder}` }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-          <div style={{ fontFamily: "Fraunces, serif", fontSize: 19, fontWeight: 600 }}>Log a sale</div>
-          <X size={18} onClick={onClose} style={{ cursor: "pointer", color: inkSoft }} />
-        </div>
-        <div style={{ fontSize: 12.5, color: inkSoft, marginBottom: 20 }}>{location} · logged by {profile.username}</div>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(20,36,32,0.55)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 40 }}>
+      <div style={{ width: isMobile ? "100%" : 400, maxHeight: isMobile ? "92vh" : "auto", overflowY: "auto", background: paper, borderRadius: isMobile ? "10px 10px 0 0" : 4, padding: "26px 26px 22px", border: `1px solid ${cardBorder}`, boxSizing: "border-box" }}>
+        {savedRef ? (
+          <div style={{ textAlign: "center", padding: "20px 0" }}>
+            <div style={{ width: 44, height: 44, borderRadius: "50%", background: teal, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px" }}>
+              <Check size={22} color="#fff" />
+            </div>
+            <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, fontWeight: 600, marginBottom: 6 }}>Sale saved</div>
+            <div style={{ fontSize: 13, color: inkSoft }}>Reference</div>
+            <div style={{ fontFamily: "monospace", fontSize: 17, marginTop: 2 }}>{savedRef}</div>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ fontFamily: "Fraunces, serif", fontSize: 19, fontWeight: 600 }}>Log a sale</div>
+              <X size={20} onClick={onClose} style={{ cursor: "pointer", color: inkSoft }} />
+            </div>
+            <div style={{ fontSize: 12.5, color: inkSoft, marginBottom: 20 }}>{location} · logged by {profile.username}</div>
 
-        <label style={labelStyle}>Amount (AED)</label>
-        <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={{ ...inputStyle, marginBottom: 18, fontSize: 15 }} />
+            <label style={labelStyle}>Amount (AED)</label>
+            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={{ ...inputStyle, marginBottom: 18, fontSize: 16 }} />
 
-        <label style={{ ...labelStyle, marginBottom: 7 }}>Payment method</label>
-        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
-          <button onClick={() => setMethod("cash")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "10px 0", borderRadius: 3, border: `1px solid ${method === "cash" ? teal : cardBorder}`, background: method === "cash" ? "rgba(47,111,99,0.1)" : "#fff", color: method === "cash" ? teal : inkSoft, fontSize: 13.5, cursor: "pointer" }}>
-            <Banknote size={15} /> Cash
-          </button>
-          <button onClick={() => setMethod("card")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "10px 0", borderRadius: 3, border: `1px solid ${method === "card" ? coral : cardBorder}`, background: method === "card" ? "rgba(190,90,62,0.1)" : "#fff", color: method === "card" ? coral : inkSoft, fontSize: 13.5, cursor: "pointer" }}>
-            <CreditCard size={15} /> Credit card
-          </button>
-        </div>
+            <label style={{ ...labelStyle, marginBottom: 7 }}>Payment method</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+              <button onClick={() => setMethod("cash")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "11px 0", borderRadius: 3, border: `1px solid ${method === "cash" ? teal : cardBorder}`, background: method === "cash" ? "rgba(47,111,99,0.1)" : "#fff", color: method === "cash" ? teal : inkSoft, fontSize: 14, cursor: "pointer" }}>
+                <Banknote size={16} /> Cash
+              </button>
+              <button onClick={() => setMethod("card")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "11px 0", borderRadius: 3, border: `1px solid ${method === "card" ? coral : cardBorder}`, background: method === "card" ? "rgba(190,90,62,0.1)" : "#fff", color: method === "card" ? coral : inkSoft, fontSize: 14, cursor: "pointer" }}>
+                <CreditCard size={16} /> Credit card
+              </button>
+            </div>
 
-        {method === "card" && (
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ ...labelStyle, marginBottom: 7 }}>Photo of the card</label>
-            {!cardPreview ? (
-              <div onClick={() => fileRef.current.click()} style={{ border: `1px dashed ${cardBorder}`, borderRadius: 3, padding: "22px 0", textAlign: "center", cursor: "pointer", background: "#fff" }}>
-                <Camera size={20} color={inkSoft} style={{ marginBottom: 6 }} />
-                <div style={{ fontSize: 12.5, color: inkSoft }}>Take or upload a photo</div>
-              </div>
-            ) : (
-              <div style={{ position: "relative" }}>
-                <img src={cardPreview} style={{ width: "100%", height: 110, objectFit: "cover", borderRadius: 3, border: `1px solid ${cardBorder}` }} />
-                <div onClick={() => { setCardFile(null); setCardPreview(null); }} style={{ position: "absolute", top: 6, right: 6, background: ink, borderRadius: "50%", width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-                  <X size={12} color={paper} />
-                </div>
+            {method === "card" && (
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ ...labelStyle, marginBottom: 7 }}>Photo of the card</label>
+                {!cardPreview ? (
+                  <div onClick={() => fileRef.current.click()} style={{ border: `1px dashed ${cardBorder}`, borderRadius: 3, padding: "24px 0", textAlign: "center", cursor: "pointer", background: "#fff" }}>
+                    <Camera size={22} color={inkSoft} style={{ marginBottom: 6 }} />
+                    <div style={{ fontSize: 13, color: inkSoft }}>Take or upload a photo</div>
+                  </div>
+                ) : (
+                  <div style={{ position: "relative" }}>
+                    <img src={cardPreview} style={{ width: "100%", height: 130, objectFit: "cover", borderRadius: 3, border: `1px solid ${cardBorder}` }} />
+                    <div onClick={() => { setCardFile(null); setCardPreview(null); }} style={{ position: "absolute", top: 6, right: 6, background: ink, borderRadius: "50%", width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+                      <X size={13} color={paper} />
+                    </div>
+                  </div>
+                )}
+                <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: "none" }} />
               </div>
             )}
-            <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: "none" }} />
-          </div>
-        )}
 
-        <button
-          disabled={!canSubmit}
-          onClick={handleSave}
-          style={{ width: "100%", padding: "11px 0", borderRadius: 3, border: "none", background: canSubmit ? gold : "#CFC6AE", color: ink, fontWeight: 600, fontSize: 14, cursor: canSubmit ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}
-        >
-          <Check size={15} /> {saving ? "Saving..." : "Save sale"}
-        </button>
+            <button
+              disabled={!canSubmit}
+              onClick={handleSave}
+              style={{ width: "100%", padding: "13px 0", borderRadius: 3, border: "none", background: canSubmit ? gold : "#CFC6AE", color: ink, fontWeight: 600, fontSize: 15, cursor: canSubmit ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}
+            >
+              <Check size={16} /> {saving ? "Saving..." : "Save sale"}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-function Reports({ sales }) {
+function Reports({ sales, isMobile }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [refQuery, setRefQuery] = useState("");
+  const [refResult, setRefResult] = useState(undefined); // undefined = not searched, null = not found
+  const [refImgUrl, setRefImgUrl] = useState(null);
+  const [searching, setSearching] = useState(false);
 
   const filtered = sales.filter((s) => {
     const t = new Date(s.created_at).getTime();
@@ -552,10 +678,27 @@ function Reports({ sales }) {
     return true;
   });
 
+  const totalCash = filtered.filter((s) => s.method === "cash").reduce((sum, s) => sum + Number(s.amount), 0);
+  const totalCard = filtered.filter((s) => s.method === "card").reduce((sum, s) => sum + Number(s.amount), 0);
+  const grandTotal = totalCash + totalCard;
+
+  async function searchRef() {
+    if (!refQuery.trim()) return;
+    setSearching(true);
+    setRefImgUrl(null);
+    const { data } = await supabase.from("sales").select("*").ilike("ref_number", refQuery.trim()).maybeSingle();
+    setRefResult(data || null);
+    if (data && data.card_photo_path) {
+      const { data: signed } = await supabase.storage.from("card-photos").createSignedUrl(data.card_photo_path, 3600);
+      if (signed) setRefImgUrl(signed.signedUrl);
+    }
+    setSearching(false);
+  }
+
   function exportCSV() {
-    const rows = [["Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Card photo attached"]];
+    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Card photo attached"]];
     filtered.forEach((s) => {
-      rows.push([fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, s.card_photo_path ? "Yes" : "No"]);
+      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, s.card_photo_path ? "Yes" : "No"]);
     });
     const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -569,30 +712,36 @@ function Reports({ sales }) {
 
   return (
     <div>
-      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 28, fontWeight: 600, margin: 0 }}>Reports</h1>
-      <p style={{ color: inkSoft, fontSize: 13.5, marginTop: 4, marginBottom: 24 }}>Export the sales ledger for finance review.</p>
+      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: isMobile ? 22 : 28, fontWeight: 600, margin: 0 }}>Reports</h1>
+      <p style={{ color: inkSoft, fontSize: 13.5, marginTop: 4, marginBottom: 22 }}>Export the sales ledger for finance review.</p>
 
-      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 24 }}>
-        <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end", marginBottom: 18 }}>
+        <div style={{ flex: isMobile ? "1 1 45%" : "0 0 auto" }}>
           <label style={labelStyle}>From</label>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ padding: "9px 10px", borderRadius: 3, border: `1px solid ${cardBorder}`, fontSize: 13.5, background: "#fff" }} />
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ width: isMobile ? "100%" : "auto", padding: "10px 10px", borderRadius: 3, border: `1px solid ${cardBorder}`, fontSize: 13.5, background: "#fff", boxSizing: "border-box" }} />
         </div>
-        <div>
+        <div style={{ flex: isMobile ? "1 1 45%" : "0 0 auto" }}>
           <label style={labelStyle}>To</label>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ padding: "9px 10px", borderRadius: 3, border: `1px solid ${cardBorder}`, fontSize: 13.5, background: "#fff" }} />
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ width: isMobile ? "100%" : "auto", padding: "10px 10px", borderRadius: 3, border: `1px solid ${cardBorder}`, fontSize: 13.5, background: "#fff", boxSizing: "border-box" }} />
         </div>
-        <button onClick={exportCSV} style={{ display: "flex", alignItems: "center", gap: 7, background: ink, color: paper, border: "none", borderRadius: 3, padding: "10px 16px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>
+        <button onClick={exportCSV} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: ink, color: paper, border: "none", borderRadius: 3, padding: "11px 16px", fontSize: 13.5, fontWeight: 600, cursor: "pointer", flex: isMobile ? "1 1 100%" : "0 0 auto" }}>
           <Download size={14} /> Export CSV
         </button>
       </div>
-      <div style={{ fontSize: 12, color: inkSoft, marginBottom: 20 }}>Leave both dates blank to export full history. {filtered.length} entries in range.</div>
+      <div style={{ fontSize: 12, color: inkSoft, marginBottom: 22 }}>Leave both dates blank to export full history. {filtered.length} entries in range.</div>
 
-      <div style={{ display: "flex", gap: 14 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
+        <StatCard label="Total cash" value={fmtAED(totalCash)} tint={teal} />
+        <StatCard label="Total credit card" value={fmtAED(totalCard)} tint={coral} />
+        <StatCard label="Grand total" value={fmtAED(grandTotal)} />
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 26 }}>
         {LOCATIONS.map((loc) => {
           const e = filtered.filter((s) => s.location === loc);
           const total = e.reduce((sum, s) => sum + Number(s.amount), 0);
           return (
-            <div key={loc} style={{ flex: 1, background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "16px 18px" }}>
+            <div key={loc} style={{ flex: "1 1 160px", background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "16px 18px" }}>
               <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 8 }}>{loc}</div>
               <div style={{ fontFamily: "Fraunces, serif", fontSize: 19 }}>{fmtAED(total)}</div>
               <div style={{ fontSize: 12, color: inkSoft, marginTop: 4 }}>{e.length} entries</div>
@@ -600,11 +749,49 @@ function Reports({ sales }) {
           );
         })}
       </div>
+
+      <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: isMobile ? "16px" : "18px 20px" }}>
+        <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 4 }}>Look up a sale by reference</div>
+        <p style={{ fontSize: 12, color: inkSoft, marginBottom: 14 }}>Find a specific sale and its card photo, e.g. for matching against a bank statement.</p>
+        <div style={{ display: "flex", gap: 8, marginBottom: refResult !== undefined ? 16 : 0 }}>
+          <input
+            value={refQuery}
+            onChange={(e) => setRefQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && searchRef()}
+            placeholder="e.g. SL-000012"
+            style={{ flex: 1, padding: "10px 12px", borderRadius: 3, border: `1px solid ${cardBorder}`, fontSize: 13.5, background: "#fff", fontFamily: "monospace" }}
+          />
+          <button onClick={searchRef} style={{ display: "flex", alignItems: "center", gap: 6, background: ink, color: paper, border: "none", borderRadius: 3, padding: "10px 16px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>
+            <Search size={14} /> {searching ? "..." : "Find"}
+          </button>
+        </div>
+
+        {refResult === null && <div style={{ fontSize: 13, color: coral }}>No sale found with that reference.</div>}
+
+        {refResult && (
+          <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: 16, alignItems: isMobile ? "stretch" : "flex-start", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: 14 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: "monospace", fontSize: 14, marginBottom: 6 }}>{refResult.ref_number}</div>
+              <div style={{ fontSize: 13.5, fontWeight: 500 }}>{refResult.staff_username} · {refResult.location}</div>
+              <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>{fmtDate(refResult.created_at)} · {fmtTime(refResult.created_at)}</div>
+              <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, marginTop: 8 }}>{fmtAED(refResult.amount)}</div>
+              <div style={{ fontSize: 12, color: refResult.method === "cash" ? teal : coral, marginTop: 2, textTransform: "capitalize" }}>{refResult.method}</div>
+            </div>
+            {refResult.method === "card" && (
+              refImgUrl ? (
+                <img src={refImgUrl} style={{ width: isMobile ? "100%" : 180, height: isMobile ? "auto" : 120, objectFit: "cover", borderRadius: 3, border: `1px solid ${cardBorder}` }} />
+              ) : (
+                <div style={{ fontSize: 12, color: inkSoft }}>No card photo on file.</div>
+              )
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-function StaffView({ sales }) {
+function StaffView({ sales, isMobile }) {
   const [profiles, setProfiles] = useState([]);
   const [busyId, setBusyId] = useState(null);
 
@@ -634,44 +821,74 @@ function StaffView({ sales }) {
 
   return (
     <div>
-      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: 28, fontWeight: 600, margin: 0 }}>Staff</h1>
+      <h1 style={{ fontFamily: "Fraunces, serif", fontSize: isMobile ? 22 : 28, fontWeight: 600, margin: 0 }}>Staff</h1>
       <p style={{ color: inkSoft, fontSize: 13.5, marginTop: 4, marginBottom: 24 }}>
         Everyone who has an account. Reassign location or role here, and see totals collected for accountability.
       </p>
 
-      <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, overflow: "hidden" }}>
-        <div style={{ display: "flex", padding: "12px 20px", fontSize: 11.5, color: inkSoft, borderBottom: `1px solid ${cardBorder}` }}>
-          <div style={{ flex: 1.4 }}>Username</div>
-          <div style={{ flex: 1 }}>Role</div>
-          <div style={{ flex: 1.2 }}>Location</div>
-          <div style={{ flex: 1, textAlign: "right" }}>Cash</div>
-          <div style={{ flex: 1, textAlign: "right" }}>Card</div>
-          <div style={{ flex: 1, textAlign: "right" }}>Total</div>
+      {isMobile ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {profiles.map((p) => {
+            const t = totalsByUsername[p.username] || { total: 0, cash: 0, card: 0, count: 0 };
+            return (
+              <div key={p.id} style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: 14, opacity: busyId === p.id ? 0.5 : 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontSize: 14.5, fontWeight: 600 }}>{p.username}</div>
+                  <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600 }}>{fmtAED(t.total)}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                  <select value={p.role} onChange={(e) => updateProfile(p.id, { role: e.target.value })} style={{ flex: 1, fontSize: 13, padding: "8px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
+                    <option value="staff">Staff</option>
+                    <option value="manager">Manager</option>
+                  </select>
+                  <select value={p.location || ""} onChange={(e) => updateProfile(p.id, { location: e.target.value || null })} style={{ flex: 1, fontSize: 13, padding: "8px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
+                    <option value="">—</option>
+                    {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+                <div style={{ display: "flex", gap: 14, fontSize: 12.5 }}>
+                  <span style={{ color: teal }}>Cash {fmtAED(t.cash)}</span>
+                  <span style={{ color: coral }}>Card {fmtAED(t.card)}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
-        {profiles.map((p) => {
-          const t = totalsByUsername[p.username] || { total: 0, cash: 0, card: 0, count: 0 };
-          return (
-            <div key={p.id} style={{ display: "flex", padding: "12px 20px", fontSize: 13.5, borderBottom: `1px solid ${cardBorder}`, alignItems: "center", opacity: busyId === p.id ? 0.5 : 1 }}>
-              <div style={{ flex: 1.4, fontWeight: 500 }}>{p.username}</div>
-              <div style={{ flex: 1 }}>
-                <select value={p.role} onChange={(e) => updateProfile(p.id, { role: e.target.value })} style={{ fontSize: 12.5, padding: "5px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
-                  <option value="staff">Staff</option>
-                  <option value="manager">Manager</option>
-                </select>
+      ) : (
+        <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, overflow: "hidden" }}>
+          <div style={{ display: "flex", padding: "12px 20px", fontSize: 11.5, color: inkSoft, borderBottom: `1px solid ${cardBorder}` }}>
+            <div style={{ flex: 1.4 }}>Username</div>
+            <div style={{ flex: 1 }}>Role</div>
+            <div style={{ flex: 1.2 }}>Location</div>
+            <div style={{ flex: 1, textAlign: "right" }}>Cash</div>
+            <div style={{ flex: 1, textAlign: "right" }}>Card</div>
+            <div style={{ flex: 1, textAlign: "right" }}>Total</div>
+          </div>
+          {profiles.map((p) => {
+            const t = totalsByUsername[p.username] || { total: 0, cash: 0, card: 0, count: 0 };
+            return (
+              <div key={p.id} style={{ display: "flex", padding: "12px 20px", fontSize: 13.5, borderBottom: `1px solid ${cardBorder}`, alignItems: "center", opacity: busyId === p.id ? 0.5 : 1 }}>
+                <div style={{ flex: 1.4, fontWeight: 500 }}>{p.username}</div>
+                <div style={{ flex: 1 }}>
+                  <select value={p.role} onChange={(e) => updateProfile(p.id, { role: e.target.value })} style={{ fontSize: 12.5, padding: "5px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
+                    <option value="staff">Staff</option>
+                    <option value="manager">Manager</option>
+                  </select>
+                </div>
+                <div style={{ flex: 1.2 }}>
+                  <select value={p.location || ""} onChange={(e) => updateProfile(p.id, { location: e.target.value || null })} style={{ fontSize: 12.5, padding: "5px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
+                    <option value="">—</option>
+                    {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: 1, textAlign: "right", color: teal }}>{fmtAED(t.cash)}</div>
+                <div style={{ flex: 1, textAlign: "right", color: coral }}>{fmtAED(t.card)}</div>
+                <div style={{ flex: 1, textAlign: "right", fontWeight: 600 }}>{fmtAED(t.total)}</div>
               </div>
-              <div style={{ flex: 1.2 }}>
-                <select value={p.location || ""} onChange={(e) => updateProfile(p.id, { location: e.target.value || null })} style={{ fontSize: 12.5, padding: "5px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
-                  <option value="">—</option>
-                  {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
-                </select>
-              </div>
-              <div style={{ flex: 1, textAlign: "right", color: teal }}>{fmtAED(t.cash)}</div>
-              <div style={{ flex: 1, textAlign: "right", color: coral }}>{fmtAED(t.card)}</div>
-              <div style={{ flex: 1, textAlign: "right", fontWeight: 600 }}>{fmtAED(t.total)}</div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
