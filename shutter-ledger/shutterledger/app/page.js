@@ -41,6 +41,26 @@ function extractAuthCode(text) {
   return "";
 }
 
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+async function downloadSlip(sale) {
+  const { data, error } = await supabase.storage.from("card-photos").download(sale.card_photo_path);
+  if (error || !data) {
+    alert("Could not download slip: " + (error ? error.message : "unknown error"));
+    return;
+  }
+  saveBlob(data, `${sale.ref_number || "slip"}.jpg`);
+}
+
 function useIsMobile(breakpoint = 780) {
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -481,7 +501,7 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
   const cash = entries.filter((s) => s.method === "cash").reduce((sum, s) => sum + Number(s.amount), 0);
   const card = entries.filter((s) => s.method === "card").reduce((sum, s) => sum + Number(s.amount), 0);
   const [previewUrl, setPreviewUrl] = useState(null);
-  const [previewRef, setPreviewRef] = useState(null);
+  const [previewSale, setPreviewSale] = useState(null);
   const [thumbs, setThumbs] = useState({});
 
   useEffect(() => {
@@ -540,7 +560,7 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
                 <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Card"}</div>
                 {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
-                  <img src={thumbs[e.card_photo_path]} onClick={() => { setPreviewUrl(thumbs[e.card_photo_path]); setPreviewRef(e.ref_number); }} style={{ width: 34, height: 22, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
+                  <img src={thumbs[e.card_photo_path]} onClick={() => { setPreviewUrl(thumbs[e.card_photo_path]); setPreviewSale(e); }} style={{ width: 34, height: 22, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
                 )}
               </div>
             </div>
@@ -555,7 +575,7 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
                 </div>
               </div>
               {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
-                <img src={thumbs[e.card_photo_path]} onClick={() => { setPreviewUrl(thumbs[e.card_photo_path]); setPreviewRef(e.ref_number); }} style={{ width: 40, height: 26, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
+                <img src={thumbs[e.card_photo_path]} onClick={() => { setPreviewUrl(thumbs[e.card_photo_path]); setPreviewSale(e); }} style={{ width: 40, height: 26, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
               )}
               <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, width: 110, textAlign: "right" }}>{fmtAED(e.amount)}</div>
             </div>
@@ -566,14 +586,12 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
       {previewUrl && (
         <div onClick={() => setPreviewUrl(null)} style={{ position: "fixed", inset: 0, background: "rgba(20,36,32,0.85)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, zIndex: 50, cursor: "zoom-out" }}>
           <img src={previewUrl} style={{ maxWidth: "90%", maxHeight: "80%", borderRadius: 4 }} />
-          <a
-            href={previewUrl}
-            download={`${previewRef || "slip"}.jpg`}
-            onClick={(e) => e.stopPropagation()}
-            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, textDecoration: "none", background: paper, color: ink, borderRadius: 3, padding: "9px 16px", fontWeight: 600 }}
+          <button
+            onClick={(e) => { e.stopPropagation(); if (previewSale) downloadSlip(previewSale); }}
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, border: "none", cursor: "pointer", background: paper, color: ink, borderRadius: 3, padding: "9px 16px", fontWeight: 600 }}
           >
             <Download size={14} /> Download slip
-          </a>
+          </button>
         </div>
       )}
     </div>
@@ -740,6 +758,8 @@ function Reports({ sales, isMobile }) {
   const [refResult, setRefResult] = useState(undefined); // undefined = not searched, null = not found
   const [refImgUrl, setRefImgUrl] = useState(null);
   const [searching, setSearching] = useState(false);
+  const [zipBusy, setZipBusy] = useState(false);
+  const [zipProgress, setZipProgress] = useState(0);
 
   const filtered = sales.filter((s) => {
     const t = new Date(s.created_at).getTime();
@@ -751,6 +771,28 @@ function Reports({ sales, isMobile }) {
   const totalCash = filtered.filter((s) => s.method === "cash").reduce((sum, s) => sum + Number(s.amount), 0);
   const totalCard = filtered.filter((s) => s.method === "card").reduce((sum, s) => sum + Number(s.amount), 0);
   const grandTotal = totalCash + totalCard;
+
+  const cardSlips = filtered.filter((s) => s.method === "card" && s.card_photo_path);
+
+  async function downloadAllSlips() {
+    if (cardSlips.length === 0) return;
+    setZipBusy(true);
+    setZipProgress(0);
+    const JSZip = (await import("jszip")).default;
+    const zip = new JSZip();
+    let failed = 0;
+    for (let i = 0; i < cardSlips.length; i++) {
+      const s = cardSlips[i];
+      const { data, error } = await supabase.storage.from("card-photos").download(s.card_photo_path);
+      if (error || !data) failed++;
+      else zip.file(`${s.ref_number || s.id}.jpg`, data);
+      setZipProgress(i + 1);
+    }
+    const blob = await zip.generateAsync({ type: "blob" });
+    saveBlob(blob, `card-slips-${from || "all"}_to_${to || "all"}.zip`);
+    setZipBusy(false);
+    if (failed) alert(failed + " slip(s) could not be downloaded.");
+  }
 
   async function searchRef() {
     if (!refQuery.trim()) return;
@@ -766,9 +808,9 @@ function Reports({ sales, isMobile }) {
   }
 
   function exportCSV() {
-    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Card photo attached"]];
+    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Auth code", "Card photo attached"]];
     filtered.forEach((s) => {
-      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, s.card_photo_path ? "Yes" : "No"]);
+      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, s.card_auth_code || "", s.card_photo_path ? "Yes" : "No"]);
     });
     const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -820,6 +862,49 @@ function Reports({ sales, isMobile }) {
         })}
       </div>
 
+      <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, marginBottom: 26, overflow: "hidden" }}>
+        <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", justifyContent: "space-between", alignItems: isMobile ? "stretch" : "center", gap: 10, padding: "14px 16px", borderBottom: `1px solid ${cardBorder}` }}>
+          <div>
+            <div style={{ fontSize: 13.5, fontWeight: 600 }}>Sales in range</div>
+            <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>{filtered.length} sales · {cardSlips.length} card slips on file</div>
+          </div>
+          <button
+            onClick={downloadAllSlips}
+            disabled={zipBusy || cardSlips.length === 0}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: zipBusy || cardSlips.length === 0 ? "#CFC6AE" : ink, color: zipBusy || cardSlips.length === 0 ? ink : paper, border: "none", borderRadius: 3, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: zipBusy || cardSlips.length === 0 ? "not-allowed" : "pointer" }}
+          >
+            <Download size={14} /> {zipBusy ? `Preparing ${zipProgress}/${cardSlips.length}...` : "Download all slips (ZIP)"}
+          </button>
+        </div>
+        <div style={{ maxHeight: 480, overflowY: "auto" }}>
+          {filtered.length === 0 && <div style={{ padding: "26px 16px", fontSize: 13, color: inkSoft }}>No sales in this range.</div>}
+          {filtered.map((s) => (
+            <div key={s.id} style={{ display: "flex", flexDirection: isMobile ? "column" : "row", alignItems: isMobile ? "stretch" : "center", gap: isMobile ? 6 : 14, padding: "12px 16px", borderBottom: `1px solid ${cardBorder}`, fontSize: 13 }}>
+              <div style={{ fontFamily: "monospace", fontSize: 12, width: isMobile ? "auto" : 92 }}>{s.ref_number || "—"}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 500 }}>{s.staff_username} · {s.location}</div>
+                <div style={{ fontSize: 11.5, color: inkSoft }}>
+                  {fmtDate(s.created_at)} · {fmtTime(s.created_at)} · {s.method === "cash" ? "Cash" : "Credit card"}
+                  {s.method === "card" && s.card_auth_code && <span style={{ fontFamily: "monospace" }}> · auth {s.card_auth_code}</span>}
+                </div>
+              </div>
+              <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, width: isMobile ? "auto" : 100, textAlign: isMobile ? "left" : "right" }}>{fmtAED(s.amount)}</div>
+              <div style={{ width: isMobile ? "auto" : 130, textAlign: isMobile ? "left" : "right" }}>
+                {s.method === "card" && s.card_photo_path ? (
+                  <button onClick={() => downloadSlip(s)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: ink, border: `1px solid ${ink}`, borderRadius: 3, padding: "6px 10px", fontSize: 12, cursor: "pointer" }}>
+                    <Download size={12} /> Download slip
+                  </button>
+                ) : s.method === "card" ? (
+                  <span style={{ fontSize: 12, color: coral }}>No slip on file</span>
+                ) : (
+                  <span style={{ fontSize: 12, color: inkSoft }}>Cash</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: isMobile ? "16px" : "18px 20px" }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 4 }}>Look up a sale by reference</div>
         <p style={{ fontSize: 12, color: inkSoft, marginBottom: 14 }}>Find a specific sale and its card photo, e.g. for matching against a bank statement.</p>
@@ -854,13 +939,12 @@ function Reports({ sales, isMobile }) {
               refImgUrl ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, width: isMobile ? "100%" : 180 }}>
                   <img src={refImgUrl} style={{ width: "100%", height: isMobile ? "auto" : 120, objectFit: "cover", borderRadius: 3, border: `1px solid ${cardBorder}` }} />
-                  <a
-                    href={refImgUrl}
-                    download={`${refResult.ref_number}-slip.jpg`}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12.5, textDecoration: "none", background: ink, color: paper, borderRadius: 3, padding: "8px 0" }}
+                  <button
+                    onClick={() => downloadSlip(refResult)}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12.5, border: "none", cursor: "pointer", background: ink, color: paper, borderRadius: 3, padding: "9px 0" }}
                   >
                     <Download size={13} /> Download slip
-                  </a>
+                  </button>
                 </div>
               ) : (
                 <div style={{ fontSize: 12, color: inkSoft }}>No card photo on file.</div>
