@@ -14,6 +14,10 @@ const teal = "#2F6F63";
 const inkSoft = "#4B5B55";
 const cardBorder = "#DCD5C6";
 
+// Pricing rules used by the commission report
+const VAT_RATE = 0.05; // customer prices include 5% VAT
+const CC_RATE = 0.0325; // card processing charge, applied to card sales only
+
 function fmtAED(n) {
   return "AED " + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -59,6 +63,19 @@ async function downloadSlip(sale) {
     return;
   }
   saveBlob(data, `${sale.ref_number || "slip"}.jpg`);
+}
+
+// gross = what customers paid (incl. VAT)
+// exVat = gross / 1.05, vat = gross - exVat
+// cc = 3.25% of card sales, net = gross - (cc + vat)
+function calcBreakdown(rows) {
+  const gross = rows.reduce((sum, s) => sum + Number(s.amount), 0);
+  const cardGross = rows.filter((s) => s.method === "card").reduce((sum, s) => sum + Number(s.amount), 0);
+  const exVat = gross / (1 + VAT_RATE);
+  const vat = gross - exVat;
+  const cc = cardGross * CC_RATE;
+  const net = gross - (cc + vat);
+  return { gross, cardGross, exVat, vat, cc, net };
 }
 
 function useIsMobile(breakpoint = 780) {
@@ -759,6 +776,15 @@ function Reports({ sales, isMobile }) {
   const [refImgUrl, setRefImgUrl] = useState(null);
   const [searching, setSearching] = useState(false);
   const [zipBusy, setZipBusy] = useState(false);
+  const [rates, setRates] = useState({});
+
+  useEffect(() => {
+    supabase.from("commission_rates").select("*").then(({ data }) => {
+      const m = {};
+      (data || []).forEach((r) => { m[r.username] = Number(r.rate); });
+      setRates(m);
+    });
+  }, []);
   const [zipProgress, setZipProgress] = useState(0);
 
   const filtered = sales.filter((s) => {
@@ -773,6 +799,31 @@ function Reports({ sales, isMobile }) {
   const grandTotal = totalCash + totalCard;
 
   const cardSlips = filtered.filter((s) => s.method === "card" && s.card_photo_path);
+
+  const byPhotographer = {};
+  filtered.forEach((s) => {
+    (byPhotographer[s.staff_username] = byPhotographer[s.staff_username] || []).push(s);
+  });
+  const commissionRows = Object.keys(byPhotographer).sort().map((u) => {
+    const b = calcBreakdown(byPhotographer[u]);
+    const rate = rates[u] || 0;
+    return { username: u, count: byPhotographer[u].length, rate, ...b, commission: (b.net * rate) / 100 };
+  });
+  const commissionTotals = {
+    ...calcBreakdown(filtered),
+    commission: commissionRows.reduce((sum, r) => sum + r.commission, 0),
+  };
+
+  function exportCommissionCSV() {
+    const rows = [["Photographer", "Sales", "Gross sales", "Gross excl. VAT", "VAT (5%)", "Card charges (3.25%)", "Net sales", "Commission %", "Commission"]];
+    commissionRows.forEach((r) => {
+      rows.push([r.username, r.count, r.gross.toFixed(2), r.exVat.toFixed(2), r.vat.toFixed(2), r.cc.toFixed(2), r.net.toFixed(2), r.rate, r.commission.toFixed(2)]);
+    });
+    rows.push(["TOTAL", filtered.length, commissionTotals.gross.toFixed(2), commissionTotals.exVat.toFixed(2), commissionTotals.vat.toFixed(2), commissionTotals.cc.toFixed(2), commissionTotals.net.toFixed(2), "", commissionTotals.commission.toFixed(2)]);
+    const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    saveBlob(blob, `commission-${from || "all"}_to_${to || "all"}.csv`);
+  }
 
   async function downloadAllSlips() {
     if (cardSlips.length === 0) return;
@@ -860,6 +911,79 @@ function Reports({ sales, isMobile }) {
             </div>
           );
         })}
+      </div>
+
+      <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, marginBottom: 26, overflow: "hidden" }}>
+        <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", justifyContent: "space-between", alignItems: isMobile ? "stretch" : "center", gap: 10, padding: "14px 16px", borderBottom: `1px solid ${cardBorder}` }}>
+          <div>
+            <div style={{ fontSize: 13.5, fontWeight: 600 }}>Photographer commission</div>
+            <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>For the dates selected above.</div>
+          </div>
+          <button onClick={exportCommissionCSV} disabled={commissionRows.length === 0} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 7, background: commissionRows.length === 0 ? "#CFC6AE" : ink, color: commissionRows.length === 0 ? ink : paper, border: "none", borderRadius: 3, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: commissionRows.length === 0 ? "not-allowed" : "pointer" }}>
+            <Download size={14} /> Export commission CSV
+          </button>
+        </div>
+
+        {commissionRows.length === 0 && <div style={{ padding: "26px 16px", fontSize: 13, color: inkSoft }}>No sales in this range.</div>}
+
+        {commissionRows.length > 0 && !isMobile && (
+          <div style={{ fontSize: 13 }}>
+            <div style={{ display: "flex", padding: "10px 16px", fontSize: 11.5, color: inkSoft, borderBottom: `1px solid ${cardBorder}` }}>
+              <div style={{ flex: 1.3 }}>Photographer</div>
+              <div style={{ flex: 0.6, textAlign: "right" }}>Rate</div>
+              <div style={{ flex: 1, textAlign: "right" }}>Gross sales</div>
+              <div style={{ flex: 1, textAlign: "right" }}>Excl. VAT</div>
+              <div style={{ flex: 1, textAlign: "right" }}>Card charges</div>
+              <div style={{ flex: 1, textAlign: "right" }}>Net sales</div>
+              <div style={{ flex: 1.1, textAlign: "right" }}>Commission</div>
+            </div>
+            {commissionRows.map((r) => (
+              <div key={r.username} style={{ display: "flex", alignItems: "center", padding: "12px 16px", borderBottom: `1px solid ${cardBorder}` }}>
+                <div style={{ flex: 1.3, fontWeight: 500 }}>{r.username}<div style={{ fontSize: 11, color: inkSoft, fontWeight: 400 }}>{r.count} sales</div></div>
+                <div style={{ flex: 0.6, textAlign: "right", color: r.rate ? ink : coral }}>{r.rate ? r.rate + "%" : "not set"}</div>
+                <div style={{ flex: 1, textAlign: "right" }}>{fmtAED(r.gross)}</div>
+                <div style={{ flex: 1, textAlign: "right" }}>{fmtAED(r.exVat)}</div>
+                <div style={{ flex: 1, textAlign: "right", color: coral }}>{fmtAED(r.cc)}</div>
+                <div style={{ flex: 1, textAlign: "right" }}>{fmtAED(r.net)}</div>
+                <div style={{ flex: 1.1, textAlign: "right", fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 15 }}>{fmtAED(r.commission)}</div>
+              </div>
+            ))}
+            <div style={{ display: "flex", alignItems: "center", padding: "12px 16px", background: "#F6F2EA", fontWeight: 600 }}>
+              <div style={{ flex: 1.3 }}>Total</div>
+              <div style={{ flex: 0.6 }} />
+              <div style={{ flex: 1, textAlign: "right" }}>{fmtAED(commissionTotals.gross)}</div>
+              <div style={{ flex: 1, textAlign: "right" }}>{fmtAED(commissionTotals.exVat)}</div>
+              <div style={{ flex: 1, textAlign: "right" }}>{fmtAED(commissionTotals.cc)}</div>
+              <div style={{ flex: 1, textAlign: "right" }}>{fmtAED(commissionTotals.net)}</div>
+              <div style={{ flex: 1.1, textAlign: "right", fontFamily: "Fraunces, serif", fontSize: 15 }}>{fmtAED(commissionTotals.commission)}</div>
+            </div>
+          </div>
+        )}
+
+        {commissionRows.length > 0 && isMobile && (
+          <div>
+            {commissionRows.map((r) => (
+              <div key={r.username} style={{ padding: "14px 16px", borderBottom: `1px solid ${cardBorder}`, fontSize: 13 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14.5 }}>{r.username} <span style={{ fontWeight: 400, fontSize: 12, color: r.rate ? inkSoft : coral }}>· {r.rate ? r.rate + "%" : "rate not set"}</span></div>
+                  <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 16 }}>{fmtAED(r.commission)}</div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: inkSoft, marginBottom: 3 }}><span>Gross sales</span><span>{fmtAED(r.gross)}</span></div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: inkSoft, marginBottom: 3 }}><span>Excl. VAT</span><span>{fmtAED(r.exVat)}</span></div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: coral, marginBottom: 3 }}><span>Card charges</span><span>{fmtAED(r.cc)}</span></div>
+                <div style={{ display: "flex", justifyContent: "space-between", color: ink, fontWeight: 500 }}><span>Net sales</span><span>{fmtAED(r.net)}</span></div>
+              </div>
+            ))}
+            <div style={{ padding: "14px 16px", background: "#F6F2EA", fontSize: 13 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600 }}><span>Total commission</span><span style={{ fontFamily: "Fraunces, serif", fontSize: 16 }}>{fmtAED(commissionTotals.commission)}</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", color: inkSoft, marginTop: 4 }}><span>Gross / Net</span><span>{fmtAED(commissionTotals.gross)} / {fmtAED(commissionTotals.net)}</span></div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ padding: "12px 16px", fontSize: 11.5, color: inkSoft, lineHeight: 1.5, borderTop: commissionRows.length ? `1px solid ${cardBorder}` : "none" }}>
+          Excl. VAT = gross ÷ 1.05. Card charges = 3.25% of card sales. Net sales = gross − (VAT + card charges). Commission = net sales × the photographer rate.
+        </div>
       </div>
 
       <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, marginBottom: 26, overflow: "hidden" }}>
@@ -960,6 +1084,45 @@ function Reports({ sales, isMobile }) {
 function StaffView({ sales, isMobile }) {
   const [profiles, setProfiles] = useState([]);
   const [busyId, setBusyId] = useState(null);
+  const [rates, setRates] = useState({});
+
+  const loadRates = useCallback(() => {
+    supabase.from("commission_rates").select("*").then(({ data }) => {
+      const m = {};
+      (data || []).forEach((r) => { m[r.username] = Number(r.rate); });
+      setRates(m);
+    });
+  }, []);
+
+  useEffect(() => { loadRates(); }, [loadRates]);
+
+  async function saveRate(username, value) {
+    const { error } = await supabase.from("commission_rates").upsert({ username, rate: value });
+    if (error) alert("Could not save commission: " + error.message);
+    await loadRates();
+  }
+
+  function rateInput(username, small) {
+    const current = rates[username] || 0;
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <input
+          type="number"
+          min="0"
+          max="100"
+          step="0.5"
+          defaultValue={current}
+          key={username + "-" + current}
+          onBlur={(e) => {
+            const v = Number(e.target.value);
+            if (!isNaN(v) && v >= 0 && v <= 100 && v !== current) saveRate(username, v);
+          }}
+          style={{ width: small ? 56 : 64, fontSize: small ? 12.5 : 13, padding: small ? "5px 6px" : "8px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}
+        />
+        <span style={{ fontSize: 12.5, color: inkSoft }}>%</span>
+      </span>
+    );
+  }
 
   const loadProfiles = useCallback(() => {
     supabase.from("profiles").select("*").order("username").then(({ data }) => setProfiles(data || []));
@@ -989,7 +1152,7 @@ function StaffView({ sales, isMobile }) {
     <div>
       <h1 style={{ fontFamily: "Fraunces, serif", fontSize: isMobile ? 22 : 28, fontWeight: 600, margin: 0 }}>Staff</h1>
       <p style={{ color: inkSoft, fontSize: 13.5, marginTop: 4, marginBottom: 24 }}>
-        Everyone who has an account. Reassign location or role here, and see totals collected for accountability.
+        Everyone who has an account. Reassign location or role, set each photographer commission %, and see totals collected for accountability.
       </p>
 
       {isMobile ? (
@@ -1012,6 +1175,10 @@ function StaffView({ sales, isMobile }) {
                     {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
                 </div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, fontSize: 12.5, color: inkSoft }}>
+                  <span>Commission rate</span>
+                  {rateInput(p.username, false)}
+                </div>
                 <div style={{ display: "flex", gap: 14, fontSize: 12.5 }}>
                   <span style={{ color: teal }}>Cash {fmtAED(t.cash)}</span>
                   <span style={{ color: coral }}>Card {fmtAED(t.card)}</span>
@@ -1026,6 +1193,7 @@ function StaffView({ sales, isMobile }) {
             <div style={{ flex: 1.4 }}>Username</div>
             <div style={{ flex: 1 }}>Role</div>
             <div style={{ flex: 1.2 }}>Location</div>
+            <div style={{ flex: 1 }}>Commission</div>
             <div style={{ flex: 1, textAlign: "right" }}>Cash</div>
             <div style={{ flex: 1, textAlign: "right" }}>Card</div>
             <div style={{ flex: 1, textAlign: "right" }}>Total</div>
@@ -1047,6 +1215,7 @@ function StaffView({ sales, isMobile }) {
                     {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
                 </div>
+                <div style={{ flex: 1 }}>{rateInput(p.username, true)}</div>
                 <div style={{ flex: 1, textAlign: "right", color: teal }}>{fmtAED(t.cash)}</div>
                 <div style={{ flex: 1, textAlign: "right", color: coral }}>{fmtAED(t.card)}</div>
                 <div style={{ flex: 1, textAlign: "right", fontWeight: 600 }}>{fmtAED(t.total)}</div>
