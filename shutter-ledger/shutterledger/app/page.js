@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { Camera, ChevronRight, Download, LogOut, Users, LayoutGrid, FileText, MapPin, X, CreditCard, Banknote, Check, Menu, Search } from "lucide-react";
 import { supabase, usernameToEmail } from "../lib/supabaseClient";
 
-const LOCATIONS = ["Radisson", "Harbour", "Five Hotels"];
+const LOCATIONS = ["Radisson", "Harbour", "Five Hotels", "Balloon Flights"];
 
 const ink = "#142420";
 const paper = "#EFEAE1";
@@ -13,6 +13,17 @@ const coral = "#BE5A3E";
 const teal = "#2F6F63";
 const inkSoft = "#4B5B55";
 const cardBorder = "#DCD5C6";
+
+// Where each sale came from
+const SOURCES = [
+  { value: "prepaid", label: "Prepaid" },
+  { value: "walk_in", label: "Walk in" },
+  { value: "sales_team", label: "Sales team" },
+];
+function sourceLabel(v) {
+  const f = SOURCES.find((s) => s.value === v);
+  return f ? f.label : "Not set";
+}
 
 // Pricing rules used by the commission report
 const VAT_RATE = 0.05; // customer prices include 5% VAT
@@ -473,8 +484,8 @@ function Dashboard({ sales, onOpenLocation, isMobile }) {
       </div>
 
       <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: isMobile ? "18px 14px" : "20px 22px", marginBottom: 20, overflowX: "auto" }}>
-        <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 18 }}>Radisson vs Harbour vs Five Hotels</div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: isMobile ? 24 : 40, height: 160, paddingLeft: 4, minWidth: isMobile ? 300 : "auto" }}>
+        <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 18 }}>Sales by location</div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: isMobile ? 24 : 40, height: 160, paddingLeft: 4, minWidth: isMobile ? 380 : "auto" }}>
           {LOCATIONS.map((loc) => {
             const t = totals[loc];
             const h = ((t.cash + t.card) / maxVal) * 140;
@@ -485,7 +496,7 @@ function Dashboard({ sales, onOpenLocation, isMobile }) {
                   <div style={{ height: `${t.card ? (t.card / (t.cash + t.card || 1)) * 100 : 0}%`, background: coral }} />
                   <div style={{ flex: 1, background: teal }} />
                 </div>
-                <div style={{ fontSize: 12.5, marginTop: 8 }}>{loc}</div>
+                <div style={{ fontSize: 12.5, marginTop: 8, textAlign: "center" }}>{loc}</div>
               </div>
             );
           })}
@@ -575,7 +586,7 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
               </div>
               <div style={{ fontSize: 11.5, color: inkSoft, marginTop: 4, fontFamily: "monospace" }}>{e.ref_number || "—"}</div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-                <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Card"}</div>
+                <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Card"} · {sourceLabel(e.sales_source)}</div>
                 {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
                   <img src={thumbs[e.card_photo_path]} onClick={() => { setPreviewUrl(thumbs[e.card_photo_path]); setPreviewSale(e); }} style={{ width: 34, height: 22, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
                 )}
@@ -587,7 +598,7 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13.5, fontWeight: 500 }}>{e.staff_username} <span style={{ color: inkSoft, fontWeight: 400, fontFamily: "monospace", fontSize: 12 }}>· {e.ref_number || "—"}</span></div>
                 <div style={{ fontSize: 12, color: inkSoft }}>
-                  {fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Credit card"}
+                  {fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Credit card"} · {sourceLabel(e.sales_source)}
                   {e.method === "card" && e.card_auth_code && <span style={{ fontFamily: "monospace" }}> · auth {e.card_auth_code}</span>}
                 </div>
               </div>
@@ -618,6 +629,7 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
 function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");
+  const [source, setSource] = useState(null);
   const [cardFile, setCardFile] = useState(null);
   const [cardPreview, setCardPreview] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -646,7 +658,7 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
     setScanning(false);
   }
 
-  const canSubmit = amount && Number(amount) > 0 && (method === "cash" || (method === "card" && cardFile)) && !saving && !scanning;
+  const canSubmit = amount && Number(amount) > 0 && source && (method === "cash" || (method === "card" && cardFile)) && !saving && !scanning;
 
   async function handleSave() {
     setSaving(true);
@@ -667,6 +679,7 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
       amount: Number(amount),
       method,
       card_photo_path,
+      sales_source: source,
       card_auth_code: method === "card" ? authCode || null : null,
       card_ocr_text: method === "card" ? (ocrText || "").slice(0, 2000) || null : null,
     });
@@ -705,6 +718,19 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
 
             <label style={labelStyle}>Amount (AED)</label>
             <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={{ ...inputStyle, marginBottom: 18, fontSize: 16 }} />
+
+            <label style={{ ...labelStyle, marginBottom: 7 }}>Sales source</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+              {SOURCES.map((s) => (
+                <button
+                  key={s.value}
+                  onClick={() => setSource(s.value)}
+                  style={{ flex: 1, padding: "11px 4px", borderRadius: 3, border: `1px solid ${source === s.value ? ink : cardBorder}`, background: source === s.value ? ink : "#fff", color: source === s.value ? paper : inkSoft, fontSize: 13.5, cursor: "pointer" }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
 
             <label style={{ ...labelStyle, marginBottom: 7 }}>Payment method</label>
             <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
@@ -859,9 +885,9 @@ function Reports({ sales, isMobile }) {
   }
 
   function exportCSV() {
-    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Auth code", "Card photo attached"]];
+    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Source", "Auth code", "Card photo attached"]];
     filtered.forEach((s) => {
-      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, s.card_auth_code || "", s.card_photo_path ? "Yes" : "No"]);
+      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, sourceLabel(s.sales_source), s.card_auth_code || "", s.card_photo_path ? "Yes" : "No"]);
     });
     const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -897,6 +923,15 @@ function Reports({ sales, isMobile }) {
         <StatCard label="Total cash" value={fmtAED(totalCash)} tint={teal} />
         <StatCard label="Total credit card" value={fmtAED(totalCard)} tint={coral} />
         <StatCard label="Grand total" value={fmtAED(grandTotal)} />
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
+        {[...SOURCES, { value: null, label: "Not set" }].map((src) => {
+          const rows = filtered.filter((s) => (s.sales_source || null) === src.value);
+          if (src.value === null && rows.length === 0) return null;
+          const total = rows.reduce((sum, s) => sum + Number(s.amount), 0);
+          return <StatCard key={src.label} label={`${src.label} · ${rows.length} sales`} value={fmtAED(total)} />;
+        })}
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 26 }}>
@@ -1008,7 +1043,7 @@ function Reports({ sales, isMobile }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 500 }}>{s.staff_username} · {s.location}</div>
                 <div style={{ fontSize: 11.5, color: inkSoft }}>
-                  {fmtDate(s.created_at)} · {fmtTime(s.created_at)} · {s.method === "cash" ? "Cash" : "Credit card"}
+                  {fmtDate(s.created_at)} · {fmtTime(s.created_at)} · {s.method === "cash" ? "Cash" : "Credit card"} · {sourceLabel(s.sales_source)}
                   {s.method === "card" && s.card_auth_code && <span style={{ fontFamily: "monospace" }}> · auth {s.card_auth_code}</span>}
                 </div>
               </div>
