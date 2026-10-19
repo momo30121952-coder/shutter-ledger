@@ -611,7 +611,7 @@ function LocationView({ location, sales, allSales, profile, onLogSale, onManage,
               </div>
               <div style={{ fontSize: 11.5, color: inkSoft, marginTop: 4, fontFamily: "monospace" }}>{e.ref_number || "—"}<VoidTag sale={e} /></div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-                <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Card"} · {sourceLabel(e.sales_source)}</div>
+                <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Card"} · {sourceLabel(e.sales_source)}{e.disclaimer_number ? ` · Disclaimer ${e.disclaimer_number}` : ""}</div>
                 {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
                   <img src={thumbs[e.card_photo_path]} onClick={() => { setPreviewUrl(thumbs[e.card_photo_path]); setPreviewSale(e); }} style={{ width: 34, height: 22, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
                 )}
@@ -625,7 +625,7 @@ function LocationView({ location, sales, allSales, profile, onLogSale, onManage,
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13.5, fontWeight: 500 }}>{e.staff_username} <span style={{ color: inkSoft, fontWeight: 400, fontFamily: "monospace", fontSize: 12 }}>· {e.ref_number || "—"}</span><VoidTag sale={e} /></div>
                 <div style={{ fontSize: 12, color: inkSoft }}>
-                  {fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Credit card"} · {sourceLabel(e.sales_source)}
+                  {fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Credit card"} · {sourceLabel(e.sales_source)}{e.disclaimer_number ? ` · Disclaimer ${e.disclaimer_number}` : ""}
                   {e.method === "card" && e.card_auth_code && <span style={{ fontFamily: "monospace" }}> · auth {e.card_auth_code}</span>}
                 </div>
                 <VoidNote sale={e} />
@@ -657,6 +657,8 @@ function LocationView({ location, sales, allSales, profile, onLogSale, onManage,
 
 function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
   const [amount, setAmount] = useState("");
+  const [disclaimer, setDisclaimer] = useState("");
+  const [dupRef, setDupRef] = useState(null); // set when the disclaimer number is already on another bill
   const [method, setMethod] = useState("cash");
   const [source, setSource] = useState(null);
   const [cardFile, setCardFile] = useState(null);
@@ -687,10 +689,19 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
     setScanning(false);
   }
 
-  const canSubmit = amount && Number(amount) > 0 && source && (method === "cash" || (method === "card" && cardFile)) && !saving && !scanning;
+  const canSubmit = amount && Number(amount) > 0 && disclaimer.trim().length > 0 && source && (method === "cash" || (method === "card" && cardFile)) && !saving && !scanning;
 
-  async function handleSave() {
+  async function handleSave(skipDuplicateCheck) {
     setSaving(true);
+    if (skipDuplicateCheck !== true) {
+      // Warn (do not block) when this disclaimer number is already on another bill, at any location.
+      const { data: used, error: usedErr } = await supabase.rpc("disclaimer_used", { num: disclaimer.trim() });
+      if (!usedErr && used) {
+        setDupRef(used);
+        setSaving(false);
+        return;
+      }
+    }
     let card_photo_path = null;
     if (method === "card" && cardFile) {
       const path = `${location}/${Date.now()}-${profile.username}.jpg`;
@@ -706,6 +717,7 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
       location,
       staff_username: profile.username,
       amount: Number(amount),
+      disclaimer_number: disclaimer.trim(),
       method,
       card_photo_path,
       sales_source: source,
@@ -747,6 +759,19 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
 
             <label style={labelStyle}>Amount (AED)</label>
             <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={{ ...inputStyle, marginBottom: 18, fontSize: 16 }} />
+
+            <label style={labelStyle}>Disclaimer number</label>
+            <input
+              value={disclaimer}
+              onChange={(e) => { setDisclaimer(e.target.value); setDupRef(null); }}
+              placeholder="Number on the signed disclaimer"
+              style={{ ...inputStyle, marginBottom: dupRef ? 8 : 18, fontSize: 16 }}
+            />
+            {dupRef && (
+              <div style={{ background: "#FBF3E4", border: `1px solid ${gold}`, borderRadius: 3, padding: "10px 12px", fontSize: 12.5, color: ink, marginBottom: 18, lineHeight: 1.45 }}>
+                This disclaimer number is already on bill <span style={{ fontFamily: "monospace" }}>{dupRef}</span>. Check the number. If it is correct, press Save anyway.
+              </div>
+            )}
 
             <label style={{ ...labelStyle, marginBottom: 7 }}>Sales source</label>
             <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
@@ -811,10 +836,10 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
 
             <button
               disabled={!canSubmit}
-              onClick={handleSave}
+              onClick={() => handleSave(!!dupRef)}
               style={{ width: "100%", padding: "13px 0", borderRadius: 3, border: "none", background: canSubmit ? gold : "#CFC6AE", color: ink, fontWeight: 600, fontSize: 15, cursor: canSubmit ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}
             >
-              <Check size={16} /> {saving ? "Saving..." : "Save sale"}
+              <Check size={16} /> {saving ? "Saving..." : dupRef ? "Save anyway" : "Save sale"}
             </button>
           </>
         )}
@@ -906,7 +931,13 @@ function Reports({ sales, allSales, onManage, changeTick, isMobile }) {
     if (!refQuery.trim()) return;
     setSearching(true);
     setRefImgUrl(null);
-    const { data } = await supabase.from("sales").select("*").ilike("ref_number", refQuery.trim()).maybeSingle();
+    const q = refQuery.trim();
+    let { data: found } = await supabase.from("sales").select("*").ilike("ref_number", q).limit(1);
+    if (!found || found.length === 0) {
+      const res = await supabase.from("sales").select("*").ilike("disclaimer_number", q).order("created_at", { ascending: false }).limit(1);
+      found = res.data;
+    }
+    const data = found && found.length > 0 ? found[0] : null;
     setRefResult(data || null);
     if (data && data.card_photo_path) {
       const { data: signed } = await supabase.storage.from("card-photos").createSignedUrl(data.card_photo_path, 3600);
@@ -916,9 +947,9 @@ function Reports({ sales, allSales, onManage, changeTick, isMobile }) {
   }
 
   function exportCSV() {
-    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Source", "Auth code", "Card photo attached", "Status", "Void reason"]];
+    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Source", "Disclaimer no.", "Auth code", "Card photo attached", "Status", "Void reason"]];
     filteredAll.forEach((s) => {
-      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, sourceLabel(s.sales_source), s.card_auth_code || "", s.card_photo_path ? "Yes" : "No", s.voided_at ? "VOID" : "Active", s.void_reason || ""]);
+      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, sourceLabel(s.sales_source), s.disclaimer_number || "", s.card_auth_code || "", s.card_photo_path ? "Yes" : "No", s.voided_at ? "VOID" : "Active", s.void_reason || ""]);
     });
     const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -1074,7 +1105,7 @@ function Reports({ sales, allSales, onManage, changeTick, isMobile }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 500 }}>{s.staff_username} · {s.location}</div>
                 <div style={{ fontSize: 11.5, color: inkSoft }}>
-                  {fmtDate(s.created_at)} · {fmtTime(s.created_at)} · {s.method === "cash" ? "Cash" : "Credit card"} · {sourceLabel(s.sales_source)}
+                  {fmtDate(s.created_at)} · {fmtTime(s.created_at)} · {s.method === "cash" ? "Cash" : "Credit card"} · {sourceLabel(s.sales_source)}{s.disclaimer_number ? ` · Disclaimer ${s.disclaimer_number}` : ""}
                   {s.method === "card" && s.card_auth_code && <span style={{ fontFamily: "monospace" }}> · auth {s.card_auth_code}</span>}
                 </div>
                 <VoidNote sale={s} />
@@ -1098,14 +1129,14 @@ function Reports({ sales, allSales, onManage, changeTick, isMobile }) {
       </div>
 
       <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: isMobile ? "16px" : "18px 20px" }}>
-        <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 4 }}>Look up a sale by reference</div>
+        <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 4 }}>Look up a sale by reference or disclaimer number</div>
         <p style={{ fontSize: 12, color: inkSoft, marginBottom: 14 }}>Find a specific sale and its card photo, e.g. for matching against a bank statement.</p>
         <div style={{ display: "flex", gap: 8, marginBottom: refResult !== undefined ? 16 : 0 }}>
           <input
             value={refQuery}
             onChange={(e) => setRefQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && searchRef()}
-            placeholder="e.g. SL-000012"
+            placeholder="SL-000012 or disclaimer number"
             style={{ flex: 1, padding: "10px 12px", borderRadius: 3, border: `1px solid ${cardBorder}`, fontSize: 13.5, background: "#fff", fontFamily: "monospace" }}
           />
           <button onClick={searchRef} style={{ display: "flex", alignItems: "center", gap: 6, background: ink, color: paper, border: "none", borderRadius: 3, padding: "10px 16px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>
@@ -1124,6 +1155,9 @@ function Reports({ sales, allSales, onManage, changeTick, isMobile }) {
               <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>{fmtDate(refResult.created_at)} · {fmtTime(refResult.created_at)}</div>
               <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, marginTop: 8 }}>{fmtAED(refResult.amount)}</div>
               <div style={{ fontSize: 12, color: refResult.method === "cash" ? teal : coral, marginTop: 2, textTransform: "capitalize" }}>{refResult.method}</div>
+              {refResult.disclaimer_number && (
+                <div style={{ fontSize: 12.5, marginTop: 6, fontFamily: "monospace" }}>Disclaimer: {refResult.disclaimer_number}</div>
+              )}
               {refResult.method === "card" && refResult.card_auth_code && (
                 <div style={{ fontSize: 12.5, marginTop: 6, fontFamily: "monospace" }}>Auth: {refResult.card_auth_code}</div>
               )}
@@ -1183,7 +1217,7 @@ function VoidNote({ sale }) {
   );
 }
 
-const AUDIT_FIELDS = { amount: "Amount", method: "Payment", sales_source: "Source", staff_username: "Photographer", location: "Location", card_auth_code: "Auth code" };
+const AUDIT_FIELDS = { disclaimer_number: "Disclaimer no.", amount: "Amount", method: "Payment", sales_source: "Source", staff_username: "Photographer", location: "Location", card_auth_code: "Auth code" };
 
 function describeChange(row) {
   if (row.action === "void") return "Bill voided";
@@ -1247,6 +1281,7 @@ function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
   const [staff, setStaff] = useState(sale.staff_username);
   const [location, setLocation] = useState(sale.location);
   const [authCode, setAuthCode] = useState(sale.card_auth_code || "");
+  const [disclaimer, setDisclaimer] = useState(sale.disclaimer_number || "");
   const [reason, setReason] = useState("");
   const [usernames, setUsernames] = useState([sale.staff_username]);
   const [saving, setSaving] = useState(false);
@@ -1263,7 +1298,7 @@ function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
 
   const isVoid = mode === "void";
   const title = mode === "edit" ? "Edit bill" : isVoid ? "Void bill" : "Restore bill";
-  const canSave = reason.trim().length >= 3 && !saving && (mode !== "edit" || Number(amount) > 0);
+  const canSave = reason.trim().length >= 3 && !saving && (mode !== "edit" || (Number(amount) > 0 && (!sale.disclaimer_number || disclaimer.trim().length > 0)));
 
   async function handleSave() {
     setSaving(true);
@@ -1277,6 +1312,7 @@ function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
         staff_username: staff,
         location,
         card_auth_code: method === "card" ? authCode.trim() || null : null,
+        disclaimer_number: disclaimer.trim() || null,
       };
     } else if (isVoid) {
       fields = { voided_at: new Date().toISOString(), voided_by: profile.username, void_reason: reason.trim() };
@@ -1335,6 +1371,9 @@ function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
                 <input value={authCode} onChange={(e) => setAuthCode(e.target.value.toUpperCase())} style={{ ...inputStyle, marginBottom: 16, fontFamily: "monospace" }} />
               </>
             )}
+
+            <label style={labelStyle}>Disclaimer number</label>
+            <input value={disclaimer} onChange={(e) => setDisclaimer(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }} />
 
             <label style={labelStyle}>Photographer</label>
             <select value={staff} onChange={(e) => setStaff(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }}>
