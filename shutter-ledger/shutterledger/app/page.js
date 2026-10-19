@@ -45,9 +45,9 @@ function fmtTime(iso) {
 function extractAuthCode(text) {
   if (!text) return "";
   const patterns = [
-    /AUTH(?:ORIZATION)?\s*(?:CODE)?[:#\s]*([A-Z0-9]{4,8})/i,
-    /APPR(?:OVAL)?\s*(?:CODE)?[:#\s]*([A-Z0-9]{4,8})/i,
-    /APP\s*CODE[:#\s]*([A-Z0-9]{4,8})/i,
+    /AUTH(?:ORIZATION)?\s*(?:CODE)?[:#\s]*(?=[A-Z0-9]{0,7}\d)([A-Z0-9]{4,8})/i,
+    /APPR(?:OVAL)?\s*(?:CODE)?[:#\s]*(?=[A-Z0-9]{0,7}\d)([A-Z0-9]{4,8})/i,
+    /APP\s*CODE[:#\s]*(?=[A-Z0-9]{0,7}\d)([A-Z0-9]{4,8})/i,
   ];
   for (const p of patterns) {
     const m = text.match(p);
@@ -109,6 +109,8 @@ export default function Home() {
   const [view, setView] = useState("dashboard");
   const [activeLocation, setActiveLocation] = useState(LOCATIONS[0]);
   const [showLogModal, setShowLogModal] = useState(false);
+  const [manage, setManage] = useState(null); // { sale, mode } when the manager edits or voids a bill
+  const [changeTick, setChangeTick] = useState(0);
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -136,14 +138,22 @@ export default function Home() {
       });
   }, [session]);
 
-  const loadSales = useCallback(() => {
-    supabase
-      .from("sales")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .then(({ data, error }) => {
-        if (!error) setSales(data || []);
-      });
+  const loadSales = useCallback(async () => {
+    // The database returns at most 1,000 rows per request, so read in pages until all sales are loaded.
+    const pageSize = 1000;
+    let all = [];
+    for (let start = 0; ; start += pageSize) {
+      const { data, error } = await supabase
+        .from("sales")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(start, start + pageSize - 1);
+      if (error) return;
+      all = all.concat(data || []);
+      if (!data || data.length < pageSize) break;
+    }
+    setSales(all);
   }, []);
 
   useEffect(() => {
@@ -163,6 +173,10 @@ export default function Home() {
   if (session === undefined) return <FullscreenMsg text="Loading..." />;
   if (!session || !profile) return <Login onSignedIn={() => {}} />;
 
+  // Voided bills stay in the lists but never count in totals, card charges or commission.
+  const liveSales = sales.filter((s) => !s.voided_at);
+  const onManage = profile.role === "manager" ? (sale, mode) => setManage({ sale, mode }) : null;
+
   return (
     <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: "100vh", background: paper, fontFamily: "Inter, sans-serif", color: ink }}>
       <Sidebar
@@ -176,13 +190,13 @@ export default function Home() {
       />
       <main style={{ flex: 1, padding: isMobile ? "20px 16px 90px" : "40px 44px", minWidth: 0 }}>
         {view === "dashboard" && profile.role === "manager" && (
-          <Dashboard sales={sales} onOpenLocation={(loc) => { setActiveLocation(loc); setView("location"); }} isMobile={isMobile} />
+          <Dashboard sales={liveSales} onOpenLocation={(loc) => { setActiveLocation(loc); setView("location"); }} isMobile={isMobile} />
         )}
         {view === "location" && (
-          <LocationView location={activeLocation} sales={sales} profile={profile} onLogSale={() => setShowLogModal(true)} isMobile={isMobile} />
+          <LocationView location={activeLocation} sales={liveSales} allSales={sales} profile={profile} onLogSale={() => setShowLogModal(true)} onManage={onManage} isMobile={isMobile} />
         )}
-        {view === "reports" && profile.role === "manager" && <Reports sales={sales} isMobile={isMobile} />}
-        {view === "staff" && profile.role === "manager" && <StaffView sales={sales} isMobile={isMobile} />}
+        {view === "reports" && profile.role === "manager" && <Reports sales={liveSales} allSales={sales} onManage={onManage} changeTick={changeTick} isMobile={isMobile} />}
+        {view === "staff" && profile.role === "manager" && <StaffView sales={liveSales} isMobile={isMobile} />}
       </main>
       {showLogModal && (
         <LogSaleModal
@@ -191,6 +205,16 @@ export default function Home() {
           isMobile={isMobile}
           onClose={() => setShowLogModal(false)}
           onSubmit={async (entry) => addSale(entry)}
+        />
+      )}
+      {manage && (
+        <ManageSaleModal
+          sale={manage.sale}
+          mode={manage.mode}
+          profile={profile}
+          isMobile={isMobile}
+          onClose={() => setManage(null)}
+          onDone={() => { setManage(null); setChangeTick((n) => n + 1); loadSales(); }}
         />
       )}
     </div>
@@ -523,8 +547,9 @@ function Dashboard({ sales, onOpenLocation, isMobile }) {
   );
 }
 
-function LocationView({ location, sales, profile, onLogSale, isMobile }) {
+function LocationView({ location, sales, allSales, profile, onLogSale, onManage, isMobile }) {
   const entries = sales.filter((s) => s.location === location);
+  const listEntries = (allSales || sales).filter((s) => s.location === location);
   const total = entries.reduce((sum, s) => sum + Number(s.amount), 0);
   const cash = entries.filter((s) => s.method === "cash").reduce((sum, s) => sum + Number(s.amount), 0);
   const card = entries.filter((s) => s.method === "card").reduce((sum, s) => sum + Number(s.amount), 0);
@@ -533,7 +558,7 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
   const [thumbs, setThumbs] = useState({});
 
   useEffect(() => {
-    const paths = entries.filter((e) => e.card_photo_path).map((e) => e.card_photo_path);
+    const paths = listEntries.filter((e) => e.card_photo_path).map((e) => e.card_photo_path);
     if (paths.length === 0) return;
     let cancelled = false;
     (async () => {
@@ -547,7 +572,7 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries.length]);
+  }, [listEntries.length]);
 
   return (
     <div>
@@ -573,39 +598,43 @@ function LocationView({ location, sales, profile, onLogSale, isMobile }) {
 
       <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, overflow: "hidden" }}>
         <div style={{ padding: "14px 20px", fontSize: 13.5, fontWeight: 600, borderBottom: `1px solid ${cardBorder}` }}>Sale history</div>
-        {entries.length === 0 && <div style={{ padding: "30px 20px", color: inkSoft, fontSize: 13.5 }}>No sales logged yet for {location}.</div>}
-        {entries.map((e) =>
+        {listEntries.length === 0 && <div style={{ padding: "30px 20px", color: inkSoft, fontSize: 13.5 }}>No sales logged yet for {location}.</div>}
+        {listEntries.map((e) =>
           isMobile ? (
-            <div key={e.id} style={{ padding: "14px 16px", borderBottom: `1px solid ${cardBorder}` }}>
+            <div key={e.id} style={{ padding: "14px 16px", borderBottom: `1px solid ${cardBorder}`, opacity: e.voided_at ? 0.6 : 1 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div style={{ width: 8, height: 8, borderRadius: "50%", background: e.method === "cash" ? teal : coral, flexShrink: 0 }} />
                   <div style={{ fontSize: 14, fontWeight: 500 }}>{e.staff_username}</div>
                 </div>
-                <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600 }}>{fmtAED(e.amount)}</div>
+                <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, textDecoration: e.voided_at ? "line-through" : "none" }}>{fmtAED(e.amount)}</div>
               </div>
-              <div style={{ fontSize: 11.5, color: inkSoft, marginTop: 4, fontFamily: "monospace" }}>{e.ref_number || "—"}</div>
+              <div style={{ fontSize: 11.5, color: inkSoft, marginTop: 4, fontFamily: "monospace" }}>{e.ref_number || "—"}<VoidTag sale={e} /></div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
                 <div style={{ fontSize: 12, color: inkSoft }}>{fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Card"} · {sourceLabel(e.sales_source)}</div>
                 {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
                   <img src={thumbs[e.card_photo_path]} onClick={() => { setPreviewUrl(thumbs[e.card_photo_path]); setPreviewSale(e); }} style={{ width: 34, height: 22, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
                 )}
               </div>
+              <VoidNote sale={e} />
+              {onManage && <div style={{ marginTop: 10 }}><SaleActions sale={e} onManage={onManage} /></div>}
             </div>
           ) : (
-            <div key={e.id} style={{ display: "flex", alignItems: "center", padding: "14px 20px", borderBottom: `1px solid ${cardBorder}`, gap: 14 }}>
+            <div key={e.id} style={{ display: "flex", alignItems: "center", padding: "14px 20px", borderBottom: `1px solid ${cardBorder}`, gap: 14, opacity: e.voided_at ? 0.6 : 1 }}>
               <div style={{ width: 8, height: 8, borderRadius: "50%", background: e.method === "cash" ? teal : coral, flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 500 }}>{e.staff_username} <span style={{ color: inkSoft, fontWeight: 400, fontFamily: "monospace", fontSize: 12 }}>· {e.ref_number || "—"}</span></div>
+                <div style={{ fontSize: 13.5, fontWeight: 500 }}>{e.staff_username} <span style={{ color: inkSoft, fontWeight: 400, fontFamily: "monospace", fontSize: 12 }}>· {e.ref_number || "—"}</span><VoidTag sale={e} /></div>
                 <div style={{ fontSize: 12, color: inkSoft }}>
                   {fmtDate(e.created_at)} · {fmtTime(e.created_at)} · {e.method === "cash" ? "Cash" : "Credit card"} · {sourceLabel(e.sales_source)}
                   {e.method === "card" && e.card_auth_code && <span style={{ fontFamily: "monospace" }}> · auth {e.card_auth_code}</span>}
                 </div>
+                <VoidNote sale={e} />
               </div>
               {e.method === "card" && e.card_photo_path && thumbs[e.card_photo_path] && (
                 <img src={thumbs[e.card_photo_path]} onClick={() => { setPreviewUrl(thumbs[e.card_photo_path]); setPreviewSale(e); }} style={{ width: 40, height: 26, objectFit: "cover", borderRadius: 3, cursor: "pointer", border: `1px solid ${cardBorder}` }} />
               )}
-              <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, width: 110, textAlign: "right" }}>{fmtAED(e.amount)}</div>
+              <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, width: 110, textAlign: "right", textDecoration: e.voided_at ? "line-through" : "none" }}>{fmtAED(e.amount)}</div>
+              {onManage && <div style={{ width: 130, textAlign: "right" }}><SaleActions sale={e} onManage={onManage} /></div>}
             </div>
           )
         )}
@@ -794,7 +823,7 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
   );
 }
 
-function Reports({ sales, isMobile }) {
+function Reports({ sales, allSales, onManage, changeTick, isMobile }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [refQuery, setRefQuery] = useState("");
@@ -813,12 +842,14 @@ function Reports({ sales, isMobile }) {
   }, []);
   const [zipProgress, setZipProgress] = useState(0);
 
-  const filtered = sales.filter((s) => {
+  const inRange = (s) => {
     const t = new Date(s.created_at).getTime();
-    if (from && t < new Date(from).getTime()) return false;
-    if (to && t > new Date(to).getTime() + 86400000) return false;
+    if (from && t < new Date(from + "T00:00:00").getTime()) return false;
+    if (to && t > new Date(to + "T23:59:59.999").getTime()) return false;
     return true;
-  });
+  };
+  const filtered = sales.filter(inRange); // live bills only: used for every total
+  const filteredAll = (allSales || sales).filter(inRange); // includes voided bills: used for the list and CSV
 
   const totalCash = filtered.filter((s) => s.method === "cash").reduce((sum, s) => sum + Number(s.amount), 0);
   const totalCard = filtered.filter((s) => s.method === "card").reduce((sum, s) => sum + Number(s.amount), 0);
@@ -885,9 +916,9 @@ function Reports({ sales, isMobile }) {
   }
 
   function exportCSV() {
-    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Source", "Auth code", "Card photo attached"]];
-    filtered.forEach((s) => {
-      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, sourceLabel(s.sales_source), s.card_auth_code || "", s.card_photo_path ? "Yes" : "No"]);
+    const rows = [["Ref", "Date", "Time", "Location", "Staff", "Amount (AED)", "Method", "Source", "Auth code", "Card photo attached", "Status", "Void reason"]];
+    filteredAll.forEach((s) => {
+      rows.push([s.ref_number || "", fmtDate(s.created_at), fmtTime(s.created_at), s.location, s.staff_username, Number(s.amount).toFixed(2), s.method, sourceLabel(s.sales_source), s.card_auth_code || "", s.card_photo_path ? "Yes" : "No", s.voided_at ? "VOID" : "Active", s.void_reason || ""]);
     });
     const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -1025,7 +1056,7 @@ function Reports({ sales, isMobile }) {
         <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", justifyContent: "space-between", alignItems: isMobile ? "stretch" : "center", gap: 10, padding: "14px 16px", borderBottom: `1px solid ${cardBorder}` }}>
           <div>
             <div style={{ fontSize: 13.5, fontWeight: 600 }}>Sales in range</div>
-            <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>{filtered.length} sales · {cardSlips.length} card slips on file</div>
+            <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>{filtered.length} sales · {cardSlips.length} card slips on file{filteredAll.length > filtered.length ? ` · ${filteredAll.length - filtered.length} voided` : ""}</div>
           </div>
           <button
             onClick={downloadAllSlips}
@@ -1036,18 +1067,19 @@ function Reports({ sales, isMobile }) {
           </button>
         </div>
         <div style={{ maxHeight: 480, overflowY: "auto" }}>
-          {filtered.length === 0 && <div style={{ padding: "26px 16px", fontSize: 13, color: inkSoft }}>No sales in this range.</div>}
-          {filtered.map((s) => (
-            <div key={s.id} style={{ display: "flex", flexDirection: isMobile ? "column" : "row", alignItems: isMobile ? "stretch" : "center", gap: isMobile ? 6 : 14, padding: "12px 16px", borderBottom: `1px solid ${cardBorder}`, fontSize: 13 }}>
-              <div style={{ fontFamily: "monospace", fontSize: 12, width: isMobile ? "auto" : 92 }}>{s.ref_number || "—"}</div>
+          {filteredAll.length === 0 && <div style={{ padding: "26px 16px", fontSize: 13, color: inkSoft }}>No sales in this range.</div>}
+          {filteredAll.map((s) => (
+            <div key={s.id} style={{ display: "flex", flexDirection: isMobile ? "column" : "row", alignItems: isMobile ? "stretch" : "center", gap: isMobile ? 6 : 14, padding: "12px 16px", borderBottom: `1px solid ${cardBorder}`, fontSize: 13, opacity: s.voided_at ? 0.6 : 1 }}>
+              <div style={{ fontFamily: "monospace", fontSize: 12, width: isMobile ? "auto" : 92 }}>{s.ref_number || "—"}{s.voided_at && <div><VoidTag sale={s} /></div>}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 500 }}>{s.staff_username} · {s.location}</div>
                 <div style={{ fontSize: 11.5, color: inkSoft }}>
                   {fmtDate(s.created_at)} · {fmtTime(s.created_at)} · {s.method === "cash" ? "Cash" : "Credit card"} · {sourceLabel(s.sales_source)}
                   {s.method === "card" && s.card_auth_code && <span style={{ fontFamily: "monospace" }}> · auth {s.card_auth_code}</span>}
                 </div>
+                <VoidNote sale={s} />
               </div>
-              <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, width: isMobile ? "auto" : 100, textAlign: isMobile ? "left" : "right" }}>{fmtAED(s.amount)}</div>
+              <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, width: isMobile ? "auto" : 100, textAlign: isMobile ? "left" : "right", textDecoration: s.voided_at ? "line-through" : "none" }}>{fmtAED(s.amount)}</div>
               <div style={{ width: isMobile ? "auto" : 130, textAlign: isMobile ? "left" : "right" }}>
                 {s.method === "card" && s.card_photo_path ? (
                   <button onClick={() => downloadSlip(s)} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: ink, border: `1px solid ${ink}`, borderRadius: 3, padding: "6px 10px", fontSize: 12, cursor: "pointer" }}>
@@ -1059,6 +1091,7 @@ function Reports({ sales, isMobile }) {
                   <span style={{ fontSize: 12, color: inkSoft }}>Cash</span>
                 )}
               </div>
+              {onManage && <div style={{ width: isMobile ? "auto" : 120, textAlign: isMobile ? "left" : "right" }}><SaleActions sale={s} onManage={onManage} /></div>}
             </div>
           ))}
         </div>
@@ -1085,7 +1118,8 @@ function Reports({ sales, isMobile }) {
         {refResult && (
           <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: 16, alignItems: isMobile ? "stretch" : "flex-start", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: 14 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontFamily: "monospace", fontSize: 14, marginBottom: 6 }}>{refResult.ref_number}</div>
+              <div style={{ fontFamily: "monospace", fontSize: 14, marginBottom: 6 }}>{refResult.ref_number}<VoidTag sale={refResult} /></div>
+              <VoidNote sale={refResult} />
               <div style={{ fontSize: 13.5, fontWeight: 500 }}>{refResult.staff_username} · {refResult.location}</div>
               <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>{fmtDate(refResult.created_at)} · {fmtTime(refResult.created_at)}</div>
               <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, marginTop: 8 }}>{fmtAED(refResult.amount)}</div>
@@ -1111,6 +1145,232 @@ function Reports({ sales, isMobile }) {
             )}
           </div>
         )}
+      </div>
+      {onManage && <ChangeLog tick={changeTick} />}
+    </div>
+  );
+}
+
+function SaleActions({ sale, onManage }) {
+  if (!onManage) return null;
+  const btn = { background: "transparent", border: `1px solid ${cardBorder}`, borderRadius: 3, padding: "5px 10px", fontSize: 12, cursor: "pointer", color: ink };
+  if (sale.voided_at) {
+    return <button onClick={() => onManage(sale, "restore")} style={btn}>Restore</button>;
+  }
+  return (
+    <span style={{ display: "inline-flex", gap: 6 }}>
+      <button onClick={() => onManage(sale, "edit")} style={btn}>Edit</button>
+      <button onClick={() => onManage(sale, "void")} style={{ ...btn, color: coral, borderColor: coral }}>Void</button>
+    </span>
+  );
+}
+
+function VoidTag({ sale }) {
+  if (!sale || !sale.voided_at) return null;
+  return (
+    <span style={{ display: "inline-block", fontSize: 10.5, fontWeight: 700, letterSpacing: 0.3, color: coral, border: `1px solid ${coral}`, borderRadius: 3, padding: "1px 5px", marginLeft: 6 }}>
+      VOID
+    </span>
+  );
+}
+
+function VoidNote({ sale }) {
+  if (!sale || !sale.voided_at) return null;
+  return (
+    <div style={{ fontSize: 11.5, color: coral, marginTop: 3 }}>
+      Voided{sale.voided_by ? " by " + sale.voided_by : ""}{sale.void_reason ? ": " + sale.void_reason : ""}
+    </div>
+  );
+}
+
+const AUDIT_FIELDS = { amount: "Amount", method: "Payment", sales_source: "Source", staff_username: "Photographer", location: "Location", card_auth_code: "Auth code" };
+
+function describeChange(row) {
+  if (row.action === "void") return "Bill voided";
+  if (row.action === "restore") return "Bill restored";
+  const o = row.old_data || {};
+  const n = row.new_data || {};
+  const norm = (k, v) => (v === null || v === undefined || v === "" ? "" : k === "amount" ? Number(v).toFixed(2) : String(v));
+  const show = (k, v) => {
+    const s = norm(k, v);
+    if (s === "") return "none";
+    return k === "sales_source" ? sourceLabel(s) : s;
+  };
+  const parts = [];
+  Object.keys(AUDIT_FIELDS).forEach((k) => {
+    if (norm(k, o[k]) !== norm(k, n[k])) parts.push(`${AUDIT_FIELDS[k]}: ${show(k, o[k])} → ${show(k, n[k])}`);
+  });
+  return parts.length ? parts.join("; ") : "Edited";
+}
+
+function ChangeLog({ tick }) {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    supabase
+      .from("sales_audit")
+      .select("*")
+      .order("changed_at", { ascending: false })
+      .limit(50)
+      .then(({ data }) => setRows(data || []));
+  }, [tick]);
+
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, marginTop: 26, overflow: "hidden" }}>
+      <div style={{ padding: "14px 16px", borderBottom: `1px solid ${cardBorder}` }}>
+        <div style={{ fontSize: 13.5, fontWeight: 600 }}>Changes and voids</div>
+        <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>The last 50 edits, voids and restores. Only managers can see this.</div>
+      </div>
+      <div style={{ maxHeight: 360, overflowY: "auto" }}>
+        {rows !== null && rows.length === 0 && <div style={{ padding: "22px 16px", fontSize: 13, color: inkSoft }}>No changes yet.</div>}
+        {(rows || []).map((r) => (
+          <div key={r.id} style={{ padding: "12px 16px", borderBottom: `1px solid ${cardBorder}`, fontSize: 13 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <div>
+                <span style={{ fontFamily: "monospace", fontSize: 12 }}>{r.ref_number || "—"}</span>
+                <span style={{ marginLeft: 8, fontWeight: 600, color: r.action === "void" ? coral : r.action === "restore" ? teal : ink, textTransform: "capitalize" }}>{r.action}</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: inkSoft }}>{fmtDate(r.changed_at)} · {fmtTime(r.changed_at)} · {r.changed_by || "system"}</div>
+            </div>
+            <div style={{ fontSize: 12.5, marginTop: 4 }}>{describeChange(r)}</div>
+            {r.reason && <div style={{ fontSize: 12, color: inkSoft, marginTop: 2 }}>Reason: {r.reason}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
+  const [amount, setAmount] = useState(String(sale.amount));
+  const [method, setMethod] = useState(sale.method);
+  const [source, setSource] = useState(sale.sales_source || null);
+  const [staff, setStaff] = useState(sale.staff_username);
+  const [location, setLocation] = useState(sale.location);
+  const [authCode, setAuthCode] = useState(sale.card_auth_code || "");
+  const [reason, setReason] = useState("");
+  const [usernames, setUsernames] = useState([sale.staff_username]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (mode !== "edit") return;
+    supabase.from("profiles").select("username").order("username").then(({ data }) => {
+      const names = (data || []).map((p) => p.username);
+      if (!names.includes(sale.staff_username)) names.push(sale.staff_username);
+      setUsernames(names);
+    });
+  }, [mode, sale.staff_username]);
+
+  const isVoid = mode === "void";
+  const title = mode === "edit" ? "Edit bill" : isVoid ? "Void bill" : "Restore bill";
+  const canSave = reason.trim().length >= 3 && !saving && (mode !== "edit" || Number(amount) > 0);
+
+  async function handleSave() {
+    setSaving(true);
+    setError("");
+    let fields;
+    if (mode === "edit") {
+      fields = {
+        amount: Number(amount),
+        method,
+        sales_source: source,
+        staff_username: staff,
+        location,
+        card_auth_code: method === "card" ? authCode.trim() || null : null,
+      };
+    } else if (isVoid) {
+      fields = { voided_at: new Date().toISOString(), voided_by: profile.username, void_reason: reason.trim() };
+    } else {
+      fields = { voided_at: null, voided_by: null, void_reason: null };
+    }
+    const { data, error: err } = await supabase
+      .from("sales")
+      .update({ ...fields, last_change_reason: reason.trim() })
+      .eq("id", sale.id)
+      .select();
+    setSaving(false);
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    if (!data || data.length === 0) {
+      setError("The change was not saved. Check you are signed in as manager.");
+      return;
+    }
+    onDone();
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(20,36,32,0.55)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 45 }}>
+      <div style={{ width: isMobile ? "100%" : 420, maxHeight: isMobile ? "92vh" : "90vh", overflowY: "auto", background: paper, borderRadius: isMobile ? "10px 10px 0 0" : 4, padding: "26px 26px 22px", border: `1px solid ${cardBorder}`, boxSizing: "border-box" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ fontFamily: "Fraunces, serif", fontSize: 19, fontWeight: 600 }}>{title}</div>
+          <X size={20} onClick={onClose} style={{ cursor: "pointer", color: inkSoft }} />
+        </div>
+        <div style={{ fontSize: 12.5, color: inkSoft, marginBottom: 18, fontFamily: "monospace" }}>{sale.ref_number} · {sale.staff_username} · {fmtAED(sale.amount)}</div>
+
+        {mode === "edit" && (
+          <>
+            <label style={labelStyle}>Amount (AED)</label>
+            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, marginBottom: 16, fontSize: 16 }} />
+
+            <label style={{ ...labelStyle, marginBottom: 7 }}>Sales source</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              {SOURCES.map((s) => (
+                <button key={s.value} onClick={() => setSource(s.value)} style={{ flex: 1, padding: "10px 4px", borderRadius: 3, border: `1px solid ${source === s.value ? ink : cardBorder}`, background: source === s.value ? ink : "#fff", color: source === s.value ? paper : inkSoft, fontSize: 13, cursor: "pointer" }}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
+            <label style={{ ...labelStyle, marginBottom: 7 }}>Payment method</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <button onClick={() => setMethod("cash")} style={{ flex: 1, padding: "10px 0", borderRadius: 3, border: `1px solid ${method === "cash" ? teal : cardBorder}`, background: method === "cash" ? "rgba(47,111,99,0.1)" : "#fff", color: method === "cash" ? teal : inkSoft, fontSize: 13.5, cursor: "pointer" }}>Cash</button>
+              <button onClick={() => setMethod("card")} style={{ flex: 1, padding: "10px 0", borderRadius: 3, border: `1px solid ${method === "card" ? coral : cardBorder}`, background: method === "card" ? "rgba(190,90,62,0.1)" : "#fff", color: method === "card" ? coral : inkSoft, fontSize: 13.5, cursor: "pointer" }}>Credit card</button>
+            </div>
+
+            {method === "card" && (
+              <>
+                <label style={labelStyle}>Authorization code</label>
+                <input value={authCode} onChange={(e) => setAuthCode(e.target.value.toUpperCase())} style={{ ...inputStyle, marginBottom: 16, fontFamily: "monospace" }} />
+              </>
+            )}
+
+            <label style={labelStyle}>Photographer</label>
+            <select value={staff} onChange={(e) => setStaff(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }}>
+              {usernames.map((u) => (<option key={u} value={u}>{u}</option>))}
+            </select>
+
+            <label style={labelStyle}>Location</label>
+            <select value={location} onChange={(e) => setLocation(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }}>
+              {LOCATIONS.map((l) => (<option key={l} value={l}>{l}</option>))}
+            </select>
+          </>
+        )}
+
+        {isVoid && (
+          <p style={{ fontSize: 13, color: inkSoft, lineHeight: 1.5, marginBottom: 16 }}>
+            This bill stays in the list marked VOID. It no longer counts in totals, card charges or commission. You can restore it later.
+          </p>
+        )}
+        {mode === "restore" && (
+          <p style={{ fontSize: 13, color: inkSoft, lineHeight: 1.5, marginBottom: 16 }}>
+            This bill will count in totals, card charges and commission again.
+          </p>
+        )}
+
+        <label style={labelStyle}>Reason (required)</label>
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Wrong amount entered" style={{ ...inputStyle, marginBottom: 16 }} />
+
+        {error && <div style={{ color: coral, fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+
+        <button
+          disabled={!canSave}
+          onClick={handleSave}
+          style={{ width: "100%", padding: "13px 0", borderRadius: 3, border: "none", background: !canSave ? "#CFC6AE" : isVoid ? coral : gold, color: !canSave ? ink : isVoid ? "#fff" : ink, fontWeight: 600, fontSize: 15, cursor: canSave ? "pointer" : "not-allowed" }}
+        >
+          {saving ? "Saving..." : mode === "edit" ? "Save changes" : isVoid ? "Void this bill" : "Restore this bill"}
+        </button>
       </div>
     </div>
   );
