@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { Camera, ChevronRight, Download, LogOut, Users, LayoutGrid, FileText, MapPin, X, CreditCard, Banknote, Check, Menu, Search } from "lucide-react";
 import { supabase, usernameToEmail } from "../lib/supabaseClient";
 
-const LOCATIONS = ["Radisson", "Harbour", "Five Hotels", "Balloon Flights"];
+const LOCATIONS = ["Radisson", "Harbour", "Five Hotels", "Balloon Flights", "Drive the Thrill"];
 
 const ink = "#142420";
 const paper = "#EFEAE1";
@@ -111,6 +111,7 @@ export default function Home() {
   const [showLogModal, setShowLogModal] = useState(false);
   const [manage, setManage] = useState(null); // { sale, mode } when the manager edits or voids a bill
   const [changeTick, setChangeTick] = useState(0);
+  const [adminLocs, setAdminLocs] = useState(null); // locations an admin oversees (null while loading)
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -137,6 +138,23 @@ export default function Home() {
         }
       });
   }, [session]);
+
+  useEffect(() => {
+    if (!profile || profile.role !== "admin") {
+      setAdminLocs([]);
+      return;
+    }
+    supabase
+      .from("admin_locations")
+      .select("location")
+      .eq("username", profile.username)
+      .then(({ data }) => {
+        const set = new Set((data || []).map((r) => r.location));
+        const mine = LOCATIONS.filter((l) => set.has(l));
+        setAdminLocs(mine);
+        if (mine.length > 0) setActiveLocation((cur) => (mine.includes(cur) ? cur : mine[0]));
+      });
+  }, [profile]);
 
   const loadSales = useCallback(async () => {
     // The database returns at most 1,000 rows per request, so read in pages until all sales are loaded.
@@ -175,12 +193,18 @@ export default function Home() {
 
   // Voided bills stay in the lists but never count in totals, card charges or commission.
   const liveSales = sales.filter((s) => !s.voided_at);
-  const onManage = profile.role === "manager" ? (sale, mode) => setManage({ sale, mode }) : null;
+  // The manager sees every location. An admin has the manager's powers, but only for the locations assigned to them.
+  const canManage = profile.role === "manager" || profile.role === "admin";
+  const myLocations = profile.role === "manager" ? LOCATIONS : profile.role === "admin" ? adminLocs || [] : [profile.location].filter(Boolean);
+  const noScope = profile.role === "admin" && Array.isArray(adminLocs) && adminLocs.length === 0;
+  const onManage = canManage ? (sale, mode) => setManage({ sale, mode }) : null;
 
   return (
     <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", minHeight: "100vh", background: paper, fontFamily: "Inter, sans-serif", color: ink }}>
       <Sidebar
         profile={profile}
+        myLocations={myLocations}
+        canManage={canManage}
         view={view}
         setView={setView}
         activeLocation={activeLocation}
@@ -189,14 +213,19 @@ export default function Home() {
         isMobile={isMobile}
       />
       <main style={{ flex: 1, padding: isMobile ? "20px 16px 90px" : "40px 44px", minWidth: 0 }}>
-        {view === "dashboard" && profile.role === "manager" && (
-          <Dashboard sales={liveSales} onOpenLocation={(loc) => { setActiveLocation(loc); setView("location"); }} isMobile={isMobile} />
+        {noScope && (
+          <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "22px 20px", fontSize: 14, color: inkSoft, lineHeight: 1.5 }}>
+            No locations are assigned to your admin account yet. Ask the manager to tick your locations on the Staff page.
+          </div>
         )}
-        {view === "location" && (
+        {!noScope && view === "dashboard" && canManage && (
+          <Dashboard sales={liveSales} locations={myLocations} onOpenLocation={(loc) => { setActiveLocation(loc); setView("location"); }} isMobile={isMobile} />
+        )}
+        {!noScope && view === "location" && (
           <LocationView location={activeLocation} sales={liveSales} allSales={sales} profile={profile} onLogSale={() => setShowLogModal(true)} onManage={onManage} isMobile={isMobile} />
         )}
-        {view === "reports" && profile.role === "manager" && <Reports sales={liveSales} allSales={sales} onManage={onManage} changeTick={changeTick} isMobile={isMobile} />}
-        {view === "staff" && profile.role === "manager" && <StaffView sales={liveSales} isMobile={isMobile} />}
+        {!noScope && view === "reports" && canManage && <Reports sales={liveSales} allSales={sales} locations={myLocations} onManage={onManage} changeTick={changeTick} isMobile={isMobile} />}
+        {!noScope && view === "staff" && canManage && <StaffView sales={liveSales} profile={profile} locations={myLocations} isMobile={isMobile} />}
       </main>
       {showLogModal && (
         <LogSaleModal
@@ -212,6 +241,7 @@ export default function Home() {
           sale={manage.sale}
           mode={manage.mode}
           profile={profile}
+          locations={myLocations}
           isMobile={isMobile}
           onClose={() => setManage(null)}
           onDone={() => { setManage(null); setChangeTick((n) => n + 1); loadSales(); }}
@@ -347,7 +377,7 @@ function tabStyle(active) {
   };
 }
 
-function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, onSignOut, isMobile }) {
+function Sidebar({ profile, myLocations, canManage, view, setView, activeLocation, setActiveLocation, onSignOut, isMobile }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const navItemStyle = (active, mobileStyle) => ({
@@ -364,7 +394,7 @@ function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, on
     marginBottom: 2,
   });
 
-  const locations = profile.role === "manager" ? LOCATIONS : [profile.location];
+  const locations = myLocations;
 
   function go(setter, val, closeMenu) {
     setter(val);
@@ -390,7 +420,7 @@ function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, on
               <X size={22} color={paper} onClick={() => setMenuOpen(false)} />
             </div>
 
-            {profile.role === "manager" && (
+            {canManage && (
               <div onClick={() => go(setView, "dashboard", true)} style={navItemStyle(view === "dashboard", true)}>
                 <LayoutGrid size={16} /> Dashboard
               </div>
@@ -403,7 +433,7 @@ function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, on
               </div>
             ))}
 
-            {profile.role === "manager" && (
+            {canManage && (
               <>
                 <div style={{ marginTop: 12, marginBottom: 4, padding: "0 16px", fontSize: 11, color: "#6E7D77" }}>Manage</div>
                 <div onClick={() => go(setView, "reports", true)} style={navItemStyle(view === "reports", true)}>
@@ -431,7 +461,7 @@ function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, on
         <span style={{ fontFamily: "Fraunces, serif", fontSize: 18, fontWeight: 300, fontStyle: "italic", color: gold }}>Ledger</span>
       </div>
 
-      {profile.role === "manager" && (
+      {canManage && (
         <div onClick={() => setView("dashboard")} style={navItemStyle(view === "dashboard")}>
           <LayoutGrid size={15} /> Dashboard
         </div>
@@ -444,7 +474,7 @@ function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, on
         </div>
       ))}
 
-      {profile.role === "manager" && (
+      {canManage && (
         <>
           <div style={{ marginTop: 14, marginBottom: 4, padding: "0 14px", fontSize: 11, color: "#6E7D77" }}>Manage</div>
           <div onClick={() => setView("reports")} style={navItemStyle(view === "reports")}>
@@ -459,7 +489,7 @@ function Sidebar({ profile, view, setView, activeLocation, setActiveLocation, on
       <div style={{ marginTop: "auto", paddingTop: 20, borderTop: "1px solid rgba(255,255,255,0.08)" }}>
         <div style={{ padding: "0 6px", marginBottom: 10 }}>
           <div style={{ color: paper, fontSize: 13.5, fontWeight: 600 }}>{profile.username}</div>
-          <div style={{ color: "#8A9891", fontSize: 12 }}>{profile.role === "manager" ? "Manager · all locations" : profile.location}</div>
+          <div style={{ color: "#8A9891", fontSize: 12 }}>{profile.role === "manager" ? "Manager · all locations" : profile.role === "admin" ? "Admin · " + (myLocations.join(", ") || "no locations yet") : profile.location}</div>
         </div>
         <div onClick={onSignOut} style={{ display: "flex", alignItems: "center", gap: 8, padding: 6, color: "#9FAEA8", fontSize: 12.5, cursor: "pointer" }}>
           <LogOut size={13} /> Sign out
@@ -478,22 +508,22 @@ function StatCard({ label, value, tint }) {
   );
 }
 
-function Dashboard({ sales, onOpenLocation, isMobile }) {
+function Dashboard({ sales, locations, onOpenLocation, isMobile }) {
   const totals = useMemo(() => {
     const byLoc = {};
-    LOCATIONS.forEach((l) => (byLoc[l] = { cash: 0, card: 0, count: 0 }));
+    locations.forEach((l) => (byLoc[l] = { cash: 0, card: 0, count: 0 }));
     sales.forEach((s) => {
       if (!byLoc[s.location]) return;
       byLoc[s.location][s.method] += Number(s.amount);
       byLoc[s.location].count += 1;
     });
     return byLoc;
-  }, [sales]);
+  }, [sales, locations]);
 
   const grandTotal = sales.reduce((sum, s) => sum + Number(s.amount), 0);
   const cashTotal = sales.filter((s) => s.method === "cash").reduce((sum, s) => sum + Number(s.amount), 0);
   const cardTotal = sales.filter((s) => s.method === "card").reduce((sum, s) => sum + Number(s.amount), 0);
-  const maxVal = Math.max(1, ...LOCATIONS.map((l) => totals[l].cash + totals[l].card));
+  const maxVal = Math.max(1, ...locations.map((l) => totals[l].cash + totals[l].card));
 
   return (
     <div>
@@ -509,8 +539,8 @@ function Dashboard({ sales, onOpenLocation, isMobile }) {
 
       <div style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: isMobile ? "18px 14px" : "20px 22px", marginBottom: 20, overflowX: "auto" }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 18 }}>Sales by location</div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: isMobile ? 24 : 40, height: 160, paddingLeft: 4, minWidth: isMobile ? 380 : "auto" }}>
-          {LOCATIONS.map((loc) => {
+        <div style={{ display: "flex", alignItems: "flex-end", gap: isMobile ? 24 : 40, height: 160, paddingLeft: 4, minWidth: isMobile ? 470 : "auto" }}>
+          {locations.map((loc) => {
             const t = totals[loc];
             const h = ((t.cash + t.card) / maxVal) * 140;
             return (
@@ -532,7 +562,7 @@ function Dashboard({ sales, onOpenLocation, isMobile }) {
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-        {LOCATIONS.map((loc) => (
+        {locations.map((loc) => (
           <div key={loc} onClick={() => onOpenLocation(loc)} style={{ flex: "1 1 200px", background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: "16px 18px", cursor: "pointer" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ fontSize: 14, fontWeight: 600 }}>{loc}</div>
@@ -848,7 +878,7 @@ function LogSaleModal({ location, profile, onClose, onSubmit, isMobile }) {
   );
 }
 
-function Reports({ sales, allSales, onManage, changeTick, isMobile }) {
+function Reports({ sales, allSales, locations, onManage, changeTick, isMobile }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [refQuery, setRefQuery] = useState("");
@@ -997,7 +1027,7 @@ function Reports({ sales, allSales, onManage, changeTick, isMobile }) {
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 26 }}>
-        {LOCATIONS.map((loc) => {
+        {locations.map((loc) => {
           const e = filtered.filter((s) => s.location === loc);
           const total = e.reduce((sum, s) => sum + Number(s.amount), 0);
           return (
@@ -1274,7 +1304,7 @@ function ChangeLog({ tick }) {
   );
 }
 
-function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
+function ManageSaleModal({ sale, mode, profile, locations, onClose, onDone, isMobile }) {
   const [amount, setAmount] = useState(String(sale.amount));
   const [method, setMethod] = useState(sale.method);
   const [source, setSource] = useState(sale.sales_source || null);
@@ -1289,12 +1319,14 @@ function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
 
   useEffect(() => {
     if (mode !== "edit") return;
-    supabase.from("profiles").select("username").order("username").then(({ data }) => {
-      const names = (data || []).map((p) => p.username);
+    supabase.from("profiles").select("username, role, location").order("username").then(({ data }) => {
+      // An admin can only pick photographers who work at their own locations.
+      const pool = profile.role === "admin" ? (data || []).filter((p) => p.role === "staff" && locations.includes(p.location)) : data || [];
+      const names = pool.map((p) => p.username);
       if (!names.includes(sale.staff_username)) names.push(sale.staff_username);
       setUsernames(names);
     });
-  }, [mode, sale.staff_username]);
+  }, [mode, sale.staff_username, profile.role, locations]);
 
   const isVoid = mode === "void";
   const title = mode === "edit" ? "Edit bill" : isVoid ? "Void bill" : "Restore bill";
@@ -1382,7 +1414,7 @@ function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
 
             <label style={labelStyle}>Location</label>
             <select value={location} onChange={(e) => setLocation(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }}>
-              {LOCATIONS.map((l) => (<option key={l} value={l}>{l}</option>))}
+              {Array.from(new Set([sale.location, ...locations])).map((l) => (<option key={l} value={l}>{l}</option>))}
             </select>
           </>
         )}
@@ -1415,10 +1447,12 @@ function ManageSaleModal({ sale, mode, profile, onClose, onDone, isMobile }) {
   );
 }
 
-function StaffView({ sales, isMobile }) {
+function StaffView({ sales, profile, locations, isMobile }) {
+  const isAdmin = profile.role === "admin";
   const [profiles, setProfiles] = useState([]);
   const [busyId, setBusyId] = useState(null);
   const [rates, setRates] = useState({});
+  const [adminMap, setAdminMap] = useState({}); // username -> locations an admin oversees (manager view only)
 
   const loadRates = useCallback(() => {
     supabase.from("commission_rates").select("*").then(({ data }) => {
@@ -1429,6 +1463,17 @@ function StaffView({ sales, isMobile }) {
   }, []);
 
   useEffect(() => { loadRates(); }, [loadRates]);
+
+  const loadAdminMap = useCallback(() => {
+    if (isAdmin) return;
+    supabase.from("admin_locations").select("*").then(({ data }) => {
+      const m = {};
+      (data || []).forEach((r) => { (m[r.username] = m[r.username] || []).push(r.location); });
+      setAdminMap(m);
+    });
+  }, [isAdmin]);
+
+  useEffect(() => { loadAdminMap(); }, [loadAdminMap]);
 
   async function saveRate(username, value) {
     const { error } = await supabase.from("commission_rates").upsert({ username, rate: value });
@@ -1464,6 +1509,11 @@ function StaffView({ sales, isMobile }) {
 
   useEffect(() => { loadProfiles(); }, [loadProfiles]);
 
+  // An admin only sees staff at their own locations, plus new accounts that have no location yet.
+  const visibleProfiles = isAdmin
+    ? profiles.filter((p) => p.role === "staff" && (!p.location || locations.includes(p.location)))
+    : profiles;
+
   const totalsByUsername = useMemo(() => {
     const map = {};
     sales.forEach((s) => {
@@ -1477,21 +1527,90 @@ function StaffView({ sales, isMobile }) {
 
   async function updateProfile(id, fields) {
     setBusyId(id);
-    await supabase.from("profiles").update(fields).eq("id", id);
+    const { data, error } = await supabase.from("profiles").update(fields).eq("id", id).select();
+    if (error || !data || data.length === 0) alert("That change was not saved." + (error ? " " + error.message : ""));
     await loadProfiles();
     setBusyId(null);
+  }
+
+  async function changeRole(p, newRole) {
+    setBusyId(p.id);
+    const fields = newRole === "staff" ? { role: newRole } : { role: newRole, location: null };
+    const { data, error } = await supabase.from("profiles").update(fields).eq("id", p.id).select();
+    if (error || !data || data.length === 0) {
+      alert("That change was not saved." + (error ? " " + error.message : ""));
+    } else if (newRole !== "admin") {
+      await supabase.from("admin_locations").delete().eq("username", p.username);
+    }
+    await loadProfiles();
+    await loadAdminMap();
+    setBusyId(null);
+  }
+
+  async function toggleAdminLocation(username, location, checked) {
+    const { error } = checked
+      ? await supabase.from("admin_locations").insert({ username, location })
+      : await supabase.from("admin_locations").delete().eq("username", username).eq("location", location);
+    if (error) alert("Could not save: " + error.message);
+    await loadAdminMap();
+  }
+
+  function roleCell(p, wide) {
+    if (isAdmin) return <span style={{ fontSize: 13, color: inkSoft }}>Staff</span>;
+    return (
+      <select
+        value={p.role}
+        disabled={p.id === profile.id}
+        onChange={(e) => changeRole(p, e.target.value)}
+        style={{ width: wide ? "100%" : "auto", fontSize: wide ? 13 : 12.5, padding: wide ? "8px 6px" : "5px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}
+      >
+        <option value="staff">Staff</option>
+        <option value="admin">Admin</option>
+        <option value="manager">Manager</option>
+      </select>
+    );
+  }
+
+  function locationCell(p, wide) {
+    if (p.role === "admin") {
+      const set = adminMap[p.username] || [];
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {LOCATIONS.map((l) => (
+            <label key={l} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer" }}>
+              <input type="checkbox" checked={set.includes(l)} onChange={(e) => toggleAdminLocation(p.username, l, e.target.checked)} />
+              {l}
+            </label>
+          ))}
+        </div>
+      );
+    }
+    if (p.role === "manager") return <span style={{ fontSize: 12.5, color: inkSoft }}>All locations</span>;
+    const options = isAdmin ? locations : LOCATIONS;
+    return (
+      <select
+        value={p.location || ""}
+        onChange={(e) => updateProfile(p.id, { location: e.target.value || null })}
+        style={{ width: wide ? "100%" : "auto", fontSize: wide ? 13 : 12.5, padding: wide ? "8px 6px" : "5px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}
+      >
+        <option value="" disabled={isAdmin}>{isAdmin ? "Assign..." : "—"}</option>
+        {options.map((l) => <option key={l} value={l}>{l}</option>)}
+      </select>
+    );
   }
 
   return (
     <div>
       <h1 style={{ fontFamily: "Fraunces, serif", fontSize: isMobile ? 22 : 28, fontWeight: 600, margin: 0 }}>Staff</h1>
       <p style={{ color: inkSoft, fontSize: 13.5, marginTop: 4, marginBottom: 24 }}>
-        Everyone who has an account. Reassign location or role, set each photographer commission %, and see totals collected for accountability.
+        {isAdmin
+          ? "Staff at your locations. Move people between your locations, set each photographer commission %, and see totals collected for accountability."
+          : "Everyone who has an account. Set roles, assign locations (tick the locations an admin oversees), set each photographer commission %, and see totals collected for accountability."}
       </p>
 
       {isMobile ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {profiles.map((p) => {
+          {visibleProfiles.map((p) => {
             const t = totalsByUsername[p.username] || { total: 0, cash: 0, card: 0, count: 0 };
             return (
               <div key={p.id} style={{ background: "#fff", border: `1px solid ${cardBorder}`, borderRadius: 4, padding: 14, opacity: busyId === p.id ? 0.5 : 1 }}>
@@ -1499,15 +1618,9 @@ function StaffView({ sales, isMobile }) {
                   <div style={{ fontSize: 14.5, fontWeight: 600 }}>{p.username}</div>
                   <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600 }}>{fmtAED(t.total)}</div>
                 </div>
-                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                  <select value={p.role} onChange={(e) => updateProfile(p.id, { role: e.target.value })} style={{ flex: 1, fontSize: 13, padding: "8px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
-                    <option value="staff">Staff</option>
-                    <option value="manager">Manager</option>
-                  </select>
-                  <select value={p.location || ""} onChange={(e) => updateProfile(p.id, { location: e.target.value || null })} style={{ flex: 1, fontSize: 13, padding: "8px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
-                    <option value="">—</option>
-                    {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
-                  </select>
+                <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "flex-start" }}>
+                  <div style={{ flex: 1 }}>{roleCell(p, true)}</div>
+                  <div style={{ flex: 1 }}>{locationCell(p, true)}</div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, fontSize: 12.5, color: inkSoft }}>
                   <span>Commission rate</span>
@@ -1532,23 +1645,13 @@ function StaffView({ sales, isMobile }) {
             <div style={{ flex: 1, textAlign: "right" }}>Card</div>
             <div style={{ flex: 1, textAlign: "right" }}>Total</div>
           </div>
-          {profiles.map((p) => {
+          {visibleProfiles.map((p) => {
             const t = totalsByUsername[p.username] || { total: 0, cash: 0, card: 0, count: 0 };
             return (
               <div key={p.id} style={{ display: "flex", padding: "12px 20px", fontSize: 13.5, borderBottom: `1px solid ${cardBorder}`, alignItems: "center", opacity: busyId === p.id ? 0.5 : 1 }}>
                 <div style={{ flex: 1.4, fontWeight: 500 }}>{p.username}</div>
-                <div style={{ flex: 1 }}>
-                  <select value={p.role} onChange={(e) => updateProfile(p.id, { role: e.target.value })} style={{ fontSize: 12.5, padding: "5px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
-                    <option value="staff">Staff</option>
-                    <option value="manager">Manager</option>
-                  </select>
-                </div>
-                <div style={{ flex: 1.2 }}>
-                  <select value={p.location || ""} onChange={(e) => updateProfile(p.id, { location: e.target.value || null })} style={{ fontSize: 12.5, padding: "5px 6px", borderRadius: 3, border: `1px solid ${cardBorder}`, background: "#fff" }}>
-                    <option value="">—</option>
-                    {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
-                  </select>
-                </div>
+                <div style={{ flex: 1 }}>{roleCell(p, false)}</div>
+                <div style={{ flex: 1.2 }}>{locationCell(p, false)}</div>
                 <div style={{ flex: 1 }}>{rateInput(p.username, true)}</div>
                 <div style={{ flex: 1, textAlign: "right", color: teal }}>{fmtAED(t.cash)}</div>
                 <div style={{ flex: 1, textAlign: "right", color: coral }}>{fmtAED(t.card)}</div>
